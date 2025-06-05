@@ -5,7 +5,7 @@ this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 setup(
-    name="ms-toolkit",
+    name="ms-toolkit-nrel",
     version="0.1.0",
     description="Tools for mass spectrometry data analysis",
     long_description=long_description,
