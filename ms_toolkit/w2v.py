@@ -1,3 +1,18 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Portions of this file are adapted from the Spec2Vec project
+# (https://github.com/iomega/spec2vec) under the Apache License 2.0.
+
 from .models import SpectrumDocument
 from gensim.models import Word2Vec
 import numpy as np
@@ -10,6 +25,9 @@ def train_model(library: dict, file_path: str, vector_size: int = 300, window: i
 
 def load_model(file_path: str):
     return Word2Vec.load(file_path)
+
+# Adapted from the Spec2Vec project.
+# Calculates a weighted spectrum embedding.
 
 def calc_embedding(model, document, intensity_power):
 
