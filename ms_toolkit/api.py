@@ -59,9 +59,9 @@ class MSToolkit:
             progress_callback (callable, optional): Custom progress callback function. Defaults to None.
         """
         self.library_txt = library_txt
-        self.cache_json = cache_json or "library.json"
-        self.w2v_path = w2v_path or "w2v.model"
-        self.preselector_path = preselector_path or "preselector.pkl"
+        self.cache_json = cache_json
+        self.w2v_path = w2v_path
+        self.preselector_path = preselector_path
         self.max_mz = vector_max_mz
         self.n_clusters = n_clusters
         self.mz_shift = mz_shift  # Store the m/z shift
