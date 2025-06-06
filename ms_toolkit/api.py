@@ -160,14 +160,17 @@ class MSToolkit:
         
         return self.library
 
-    def vectorize_library(self):
+    def vectorize_library(self, bin_width=1.0):
         """
         Create full-spectrum vectors for clustering/search.
+        
+        Args:
+            bin_width: Width of m/z bins (default=1.0 for unit mass resolution)
         """
         if self.library is None:
             raise RuntimeError("Library must be loaded first")
         self.vectors = {
-            name: spectrum_to_vector(comp.spectrum, max_mz=self.max_mz)
+            name: spectrum_to_vector(comp.spectrum, max_mz=self.max_mz, bin_width=bin_width)
             for name, comp in self.library.items()
         }
         return self.vectors

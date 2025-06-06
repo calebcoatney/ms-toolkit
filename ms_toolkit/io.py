@@ -44,13 +44,13 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
                     report_progress(i / total_items)
             print('Library successfully loaded from cache.')
             
-            # Save subset to separate file if requested and subset filtering was applied
-            if save_path and save_path != cache_file and subset:
-                print(f'Saving filtered subset to {save_path}...')
+            # Save to separate file if requested (regardless of subset filtering)
+            if save_path and save_path != cache_file:
+                print(f'Saving library to {save_path}...')
                 with open(save_path, 'w') as json_file:
                     json_compounds = {k: v.to_json() for k, v in compounds.items()}
                     json.dump(json_compounds, json_file)
-                print(f'Subset successfully saved to {save_path}.')
+                print(f'Library successfully saved to {save_path}.')
                 
         else:
             # Only try to parse text file if file_path is provided
@@ -151,17 +151,26 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
                         json.dump(compounds, json_file)
                         print('JSON file successfully created.')
                 
-                # Save filtered subset if requested
-                if save_path and save_path != cache_file and subset:
-                    filtered_compounds = {}
-                    for k, v in compounds.items():
-                        compound = v if isinstance(v, Compound) else Compound.from_json(v)
-                        if compound.formula and all(element in allowed_elements for element in re.findall(r'[A-Za-z]', compound.formula)):
-                            filtered_compounds[k] = v
+                # Save to separate file if requested
+                if save_path and save_path != cache_file:
+                    print(f'Saving library to {save_path}...')
                     
-                    with open(save_path, 'w') as json_file:
-                        json.dump(filtered_compounds, json_file)
-                        print(f'Filtered subset successfully saved to {save_path}.')
+                    # If subset is applied, save only the filtered compounds
+                    if subset:
+                        filtered_compounds = {}
+                        for k, v in compounds.items():
+                            compound = v if isinstance(v, Compound) else Compound.from_json(v)
+                            if compound.formula and all(element in allowed_elements for element in re.findall(r'[A-Za-z]', compound.formula)):
+                                filtered_compounds[k] = v
+                                
+                        with open(save_path, 'w') as json_file:
+                            json.dump(filtered_compounds, json_file)
+                    # Otherwise save the entire library
+                    else:
+                        with open(save_path, 'w') as json_file:
+                            json.dump(compounds, json_file)
+                            
+                    print(f'Library successfully saved to {save_path}.')
 
         # Convert stored JSON data back to Compound instances
         result = {k: v if isinstance(v, Compound) else Compound.from_json(v)

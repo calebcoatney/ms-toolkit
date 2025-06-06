@@ -12,21 +12,29 @@ weighting_schemes = {
 }
 
 # --- Preprocessing Functions ---
-def spectrum_to_vector(spectrum, max_mz=1000):
+def spectrum_to_vector(spectrum, max_mz=1000, bin_width=1.0):
     """
     Convert a spectrum (list of tuples) to a vector.
     
     Args:
         spectrum: List of (mz, intensity) tuples
         max_mz: Maximum m/z value to include
+        bin_width: Width of m/z bins (default=1.0 for unit mass resolution)
         
     Returns:
         numpy.ndarray: Vector representation of the spectrum
     """
-    vector = np.zeros(max_mz + 1)
+    # Calculate vector size based on bin width
+    vector_size = int(max_mz / bin_width) + 1
+    vector = np.zeros(vector_size)
+    
     for mz, intensity in spectrum:
         if mz <= max_mz:
-            vector[mz] = intensity
+            # Convert m/z to appropriate bin index
+            bin_idx = int(mz / bin_width)
+            # Sum intensities that fall in the same bin
+            vector[bin_idx] += intensity
+    
     return vector
 
 def vector_to_spectrum(mass_spectrum, shift=0):
