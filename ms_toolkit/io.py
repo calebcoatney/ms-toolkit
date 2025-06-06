@@ -175,7 +175,7 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
 
 
 def parse(file_path=None, load_cache=True, cache_file=None, subset=None, 
-          show_ui=True, ui_framework='ctk', progress_callback=None, save_path=None):
+          show_ui=True, ui_framework='pyside6', progress_callback=None, save_path=None):
     """
     Parse MS library files with flexible UI options.
     
