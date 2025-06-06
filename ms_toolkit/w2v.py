@@ -17,9 +17,8 @@ from .models import SpectrumDocument
 from gensim.models import Word2Vec
 import numpy as np
 
-def train_model(library: dict, file_path: str, vector_size: int = 300, window: int = 500, workers: int = 16, epochs: int = 5):   
-
-    library_documents = [SpectrumDocument(spectrum) for spectrum in library.values()]
+def train_model(library: dict, file_path: str, vector_size: int = 300, window: int = 500, workers: int = 16, epochs: int = 5, n_decimals: int = 2):   
+    library_documents = [SpectrumDocument(compound.spectrum, n_decimals=n_decimals) for compound in library.values()]
     model = Word2Vec(library_documents, vector_size=vector_size, window=window, min_count=1, workers=workers, compute_loss=True, epochs=epochs)
     model.save(file_path)
 
@@ -30,11 +29,16 @@ def load_model(file_path: str):
 # Calculates a weighted spectrum embedding.
 
 def calc_embedding(model, document, intensity_power):
-
+    # Check if there are any matching words in the model's vocabulary
     idx_not_in_model = [i for i, x in enumerate(document.words) if x not in model.wv.key_to_index]
     words_in_model = [x for i, x in enumerate(document.words) if i not in idx_not_in_model]
+    
+    # Return zero vector if no words match the model's vocabulary
+    if not words_in_model:
+        return np.zeros(model.wv.vector_size)
+    
     weights_in_model = np.asarray([x for i, x in enumerate(document.weights)
-                                   if i not in idx_not_in_model]).reshape(len(words_in_model), 1)
+                                  if i not in idx_not_in_model]).reshape(len(words_in_model), 1)
 
     word_vectors = model.wv[words_in_model]
     weights_raised = np.power(weights_in_model, intensity_power)

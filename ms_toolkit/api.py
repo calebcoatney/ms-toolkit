@@ -198,7 +198,7 @@ class MSToolkit:
         
         return self.w2v_model
 
-    def train_w2v(self, save_path=None, vector_size=300, window=500, epochs=5, workers=16):
+    def train_w2v(self, save_path=None, vector_size=300, window=500, epochs=5, workers=16, n_decimals=2):
         """
         Train a new Word2Vec model on the library.
         
@@ -208,7 +208,8 @@ class MSToolkit:
             window (int): Maximum distance between peaks for consideration.
             epochs (int): Number of training epochs.
             workers (int): Number of worker threads.
-        
+            n_decimals (int): Number of decimals to use for m/z values. Defaults to 2.
+    
         Returns:
             The trained Word2Vec model
         """
@@ -224,7 +225,8 @@ class MSToolkit:
             vector_size=vector_size,
             window=window,
             epochs=epochs,
-            workers=workers
+            workers=workers,
+            n_decimals=n_decimals  # Pass n_decimals here
         )
         return self.w2v_model
 
@@ -393,7 +395,7 @@ class MSToolkit:
         )
         return results[:top_n]
 
-    def search_w2v(self, query_input, top_n=10, intensity_power=0.6, top_k_clusters=1):
+    def search_w2v(self, query_input, top_n=10, intensity_power=0.6, top_k_clusters=1, n_decimals=2):
         """
         Preselector + Word2Vec embedding + cosine similarity.
 
@@ -402,7 +404,8 @@ class MSToolkit:
             top_n: Number of top results to return
             intensity_power: Exponent for intensity weighting
             top_k_clusters: Number of clusters/components to consider (for KMeans/GMM)
-            
+            n_decimals: Number of decimals to use for m/z values. Defaults to 2.
+        
         Returns:
             List of (compound_name, similarity_score) tuples
         """
@@ -415,19 +418,14 @@ class MSToolkit:
         if isinstance(query_input, np.ndarray):
             # If input is a vector, ensure it has the right dimensions
             if len(query_input) != (self.max_mz + 1):
-                # Convert to spectrum (applying mz_shift) and back to vector (with correct dimensions)
                 query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift)
                 query_vector = spectrum_to_vector(query_spectrum, max_mz=self.max_mz)
             else:
                 query_vector = query_input
-                # If vector has correct dimensions, still need spectrum for later
                 query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift) 
         else:
-            # If input is a spectrum, apply mz_shift and convert to vector
             query_spectrum = [(mz + self.mz_shift, intensity) for mz, intensity in query_input]
             query_vector = spectrum_to_vector(query_spectrum, max_mz=self.max_mz)
-        
-        # Now we're guaranteed to have both a vector with correct dimensions and a spectrum
         
         # Handle different preselector types
         if isinstance(self.preselector, ClusterPreselector):
@@ -443,15 +441,57 @@ class MSToolkit:
                 top_k_components=top_k_clusters
             )
         else:
-            # Backward compatibility with older models
             selected_keys = self.preselector.select(query_vector, list(self.library.keys()))
         
-        query_doc = SpectrumDocument(query_spectrum, n_decimals=2)
-        query_embedding = calc_embedding(self.w2v_model, query_doc, intensity_power)
+        # Create initial document with provided n_decimals
+        query_doc = SpectrumDocument(query_spectrum, n_decimals=n_decimals)
+        
+        # First try with the specified n_decimals
+        try:
+            query_embedding = calc_embedding(self.w2v_model, query_doc, intensity_power)
+            
+            # If the embedding is all zeros, the vocabulary might be mismatched
+            if np.all(query_embedding == 0):
+                raise ValueError("No matching words found in model vocabulary - possible decimal precision mismatch")
+                
+        except (ValueError, IndexError) as e:
+            # Try to detect the correct decimal precision from the model's vocabulary
+            if len(self.w2v_model.wv.key_to_index) > 0:
+                # Get the first key from the model's vocabulary
+                sample_word = list(self.w2v_model.wv.key_to_index.keys())[0]
+                
+                # Parse the decimal precision from the first word (e.g., "peak@41.00" → n_decimals=2)
+                if "peak@" in sample_word:
+                    peak_value = sample_word.split("peak@")[1]
+                    if "." in peak_value:
+                        detected_decimals = len(peak_value.split(".")[1])
+                    else:
+                        detected_decimals = 0
+                    
+                    if detected_decimals != n_decimals:
+                        print(f"Warning: Decimal precision mismatch. Model uses {detected_decimals} decimals, but search used {n_decimals}.")
+                        print(f"Automatically adjusting to {detected_decimals} decimals.")
+                        
+                        # Recreate document with the correct decimal precision
+                        query_doc = SpectrumDocument(query_spectrum, n_decimals=detected_decimals)
+                        query_embedding = calc_embedding(self.w2v_model, query_doc, intensity_power)
+                        
+                        # Update n_decimals for library spectra embeddings too
+                        n_decimals = detected_decimals
+        
+        # Calculate embeddings for library spectra with the (potentially adjusted) n_decimals
+        embeddings = {name: calc_embedding(self.w2v_model, SpectrumDocument(self.library[name].spectrum, n_decimals=n_decimals), intensity_power)
+                     for name in selected_keys if name in self.library}
 
-        embeddings = {name: calc_embedding(self.w2v_model, SpectrumDocument(self.library[name].spectrum, n_decimals=2), intensity_power)
-                      for name in selected_keys if name in self.library}
-
-        similarities = {name: float(np.dot(query_embedding, vec) / (np.linalg.norm(query_embedding) * np.linalg.norm(vec)))
-                        for name, vec in embeddings.items()}
+        # Calculate similarities - avoid division by zero
+        similarities = {}
+        for name, vec in embeddings.items():
+            query_norm = np.linalg.norm(query_embedding)
+            vec_norm = np.linalg.norm(vec)
+            
+            if query_norm > 0 and vec_norm > 0:
+                similarities[name] = float(np.dot(query_embedding, vec) / (query_norm * vec_norm))
+            else:
+                similarities[name] = 0.0
+                
         return sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]

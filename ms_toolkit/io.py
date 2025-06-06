@@ -8,21 +8,10 @@ from .preprocessing import tic_scaling
 import customtkinter as ctk
 
 
-def parse_core(file_path=None, load_cache=True, cache_file='library/NIST14.json', subset=None, 
+def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None, 
                progress_callback=None, save_path=None):
     """
     Core parsing logic without any UI dependencies.
-    
-    Args:
-        file_path: Path to the text file to parse
-        load_cache: Whether to try loading from cache first
-        cache_file: Path to the cache file
-        subset: Optional subset of elements to filter by
-        progress_callback: Function to call with progress updates (0.0-1.0)
-        save_path: Optional path to save the filtered subset to (if different from cache_file)
-    
-    Returns:
-        Dictionary of compounds
     """
     compounds = {}
     
@@ -38,7 +27,8 @@ def parse_core(file_path=None, load_cache=True, cache_file='library/NIST14.json'
         if subset:
             allowed_elements = set(subset.upper())
 
-        if load_cache and os.path.exists(cache_file):
+        # Load from cache if specified and available
+        if load_cache and cache_file and os.path.exists(cache_file):
             print('Loading library from JSON file...')
             with open(cache_file, 'r') as json_file:
                 data = json.load(json_file)
@@ -58,7 +48,6 @@ def parse_core(file_path=None, load_cache=True, cache_file='library/NIST14.json'
             if save_path and save_path != cache_file and subset:
                 print(f'Saving filtered subset to {save_path}...')
                 with open(save_path, 'w') as json_file:
-                    # Convert compounds to JSON serializable format
                     json_compounds = {k: v.to_json() for k, v in compounds.items()}
                     json.dump(json_compounds, json_file)
                 print(f'Subset successfully saved to {save_path}.')
@@ -72,19 +61,33 @@ def parse_core(file_path=None, load_cache=True, cache_file='library/NIST14.json'
                 lines = file.readlines()
                 total_lines = len(lines)
                 current_compound = None
+                
+                # Dictionary to store additional metadata
+                metadata = {}
 
                 for i, line in enumerate(lines, start=1):
                     line = line.strip()
                     if line.startswith("Name:"):
                         if current_compound:
-                            current_compound.spectrum = tic_scaling(current_compound.spectrum)
-                            compounds[current_compound.name] = current_compound.to_json()
+                            # Safety check: process spectrum if it exists
+                            if current_compound.spectrum:
+                                current_compound.spectrum = tic_scaling(current_compound.spectrum)
+                                compounds[current_compound.name] = current_compound.to_json()
+                            else:
+                                print(f"Warning: Empty spectrum for compound: {current_compound.name}")
+
                         current_compound = Compound()
                         current_compound.name = line.split(":", 1)[1].strip()
+                        # Initialize an empty spectrum
+                        current_compound.spectrum = []
+                        metadata = {}  # Reset metadata for new compound
+                        
                     elif line.startswith("Formula:"):
                         current_compound.formula = line.split(":", 1)[1].strip()
+                        
                     elif line.startswith("MW:"):
                         current_compound.mw = float(line.split(":", 1)[1].strip())
+                        
                     elif line.startswith("CASNO:"):
                         casno = line.split(":", 1)[1].strip()
                         casno = ''.join(filter(str.isdigit, casno))
@@ -93,43 +96,74 @@ def parse_core(file_path=None, load_cache=True, cache_file='library/NIST14.json'
                             current_compound.casno = formatted_casno
                         else:
                             current_compound.casno = casno
+                            
                     elif line.startswith("ID:"):
                         current_compound.id_ = int(line.split(":", 1)[1].strip())
+                        
+                    elif line.startswith("DB#:"):
+                        # Use DB# as ID for MassBank
+                        current_compound.id_ = line.split(":", 1)[1].strip()
+                        
                     elif line.startswith("Comment:"):
                         current_compound.comment = line.split(":", 1)[1].strip()
-                    elif line.startswith("Num peaks:"):
-                        current_compound.num_peaks = int(line.split(":", 1)[1].strip())
-                    elif current_compound.num_peaks is not None:
-                        if current_compound.spectrum is None:
-                            current_compound.spectrum = []
-                        spectrum_data = line.split()
-                        if len(spectrum_data) == 2:
-                            current_compound.spectrum.append((int(spectrum_data[0]), float(spectrum_data[1])))
+                        
+                    elif line.startswith("Comments:"):  # MassBank uses plural
+                        current_compound.comment = line.split(":", 1)[1].strip()
+                        
+                    elif line.startswith("Num peaks:") or line.startswith("Num Peaks:"):
+                        try:
+                            current_compound.num_peaks = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            print(f"Warning: Invalid number of peaks for {current_compound.name}")
+                            current_compound.num_peaks = 0
+                            
+                    elif current_compound and current_compound.num_peaks is not None:
+                        try:
+                            spectrum_data = line.split()
+                            if len(spectrum_data) == 2:
+                                # Handle floating point m/z values
+                                mz = float(spectrum_data[0])
+                                intensity = float(spectrum_data[1])
+                                current_compound.spectrum.append((mz, intensity))
+                        except (ValueError, IndexError) as e:
+                            print(f"Warning: Error parsing spectrum line '{line}': {str(e)}")
+                            
+                    elif line and current_compound:
+                        # Store any other fields in metadata
+                        if ":" in line:
+                            key, value = line.split(":", 1)
+                            metadata[key.strip()] = value.strip()
+                            
                     report_progress(i / total_lines)
 
+                # Process the last compound
                 if current_compound:
-                    current_compound.spectrum = tic_scaling(current_compound.spectrum)
-                    compounds[current_compound.name] = current_compound.to_json()
+                    if current_compound.spectrum:
+                        current_compound.spectrum = tic_scaling(current_compound.spectrum)
+                        compounds[current_compound.name] = current_compound.to_json()
+                    else:
+                        print(f"Warning: Empty spectrum for compound: {current_compound.name}")
 
-                # Save to specified cache file
-                with open(cache_file, 'w') as json_file:
-                    json.dump(compounds, json_file)
-                    print('JSON file successfully created.')
+                # Save to cache file if specified
+                if cache_file:
+                    print(f'Saving library to {cache_file}...')
+                    with open(cache_file, 'w') as json_file:
+                        json.dump(compounds, json_file)
+                        print('JSON file successfully created.')
                 
-                # If subset filtering was applied, save to separate file if requested
+                # Save filtered subset if requested
                 if save_path and save_path != cache_file and subset:
-                    # Filter by subset before saving
                     filtered_compounds = {}
                     for k, v in compounds.items():
                         compound = v if isinstance(v, Compound) else Compound.from_json(v)
-                        if all(element in allowed_elements for element in re.findall(r'[A-Za-z]', compound.formula)):
+                        if compound.formula and all(element in allowed_elements for element in re.findall(r'[A-Za-z]', compound.formula)):
                             filtered_compounds[k] = v
                     
                     with open(save_path, 'w') as json_file:
                         json.dump(filtered_compounds, json_file)
                         print(f'Filtered subset successfully saved to {save_path}.')
 
-        # Convert stored JSON data back to Compound instances if needed.
+        # Convert stored JSON data back to Compound instances
         result = {k: v if isinstance(v, Compound) else Compound.from_json(v)
                   for k, v in compounds.items()}
         report_progress(1.0)
@@ -140,7 +174,7 @@ def parse_core(file_path=None, load_cache=True, cache_file='library/NIST14.json'
         raise
 
 
-def parse(file_path=None, load_cache=True, cache_file='library/NIST14.json', subset=None, 
+def parse(file_path=None, load_cache=True, cache_file=None, subset=None, 
           show_ui=True, ui_framework='ctk', progress_callback=None, save_path=None):
     """
     Parse MS library files with flexible UI options.
