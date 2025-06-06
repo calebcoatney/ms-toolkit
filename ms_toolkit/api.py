@@ -498,3 +498,59 @@ class MSToolkit:
                 similarities[name] = 0.0
                 
         return sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+    def download_library(self, version="2025.05.1", output_dir="cache", force=False, subset=None):
+        """
+        Download the MassBank library file and automatically load it.
+        
+        Args:
+            version (str): MassBank version to download (default: "2025.05.1")
+            output_dir (str): Directory to save the file (default: "cache")
+            force (bool): Whether to download even if file exists (default: False)
+            subset (str): Subset of elements to include when loading (default: None)
+            
+        Returns:
+            dict: The loaded library
+        """
+        import os
+        import requests
+        from tqdm import tqdm
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        url = f"https://github.com/MassBank/MassBank-data/releases/download/{version}/MassBank.msp_NIST"
+        output_path = os.path.join(output_dir, "MassBank.msp_NIST")
+        json_path = os.path.join(output_dir, f"massbank_{version}.json")
+        
+        # Check if file already exists
+        if os.path.exists(output_path) and not force:
+            print(f"MassBank library already exists at {output_path}")
+        else:
+            print(f"Downloading MassBank library v{version}...")
+            
+            # Download file with progress bar
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            # Get file size for progress bar
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(output_path, 'wb') as f, tqdm(
+                total=total_size, unit='B', unit_scale=True, 
+                desc="MassBank"
+            ) as progress_bar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        progress_bar.update(len(chunk))
+            
+            print(f"Downloaded MassBank library to {output_path}")
+        
+        # Load the library automatically
+        return self.load_library(
+            file_path=output_path, 
+            json_path=json_path, 
+            subset=subset,
+            save_path=json_path
+        )

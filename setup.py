@@ -19,6 +19,8 @@ setup(
         "joblib",
         "gensim",
         "scikit-learn",
+        "requests",
+        "tqdm"
     ],
     python_requires=">=3.8",
 )
