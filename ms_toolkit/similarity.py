@@ -67,7 +67,7 @@ def compare_spectra(query_spectrum, library_spectra, max_mz=1000, unmatched_meth
     proc_query = preprocess_spectrum(query_spectrum, weighting_scheme=weighting_scheme)
 
     scores = {}
-    for compound_name, compound in library_spectra.items():
+    for dict_key, compound in library_spectra.items():
         if similarity_measure == "weighted_cosine":
             proc_lib = preprocess_spectrum(compound.spectrum, weighting_scheme=weighting_scheme)
             similarity = dot_product_similarity(proc_query, proc_lib, max_mz, unmatched_method)
@@ -77,6 +77,7 @@ def compare_spectra(query_spectrum, library_spectra, max_mz=1000, unmatched_meth
         else:
             raise ValueError("Unknown similarity_measure option.")
         
-        scores[compound_name] = similarity
+        # Use compound.name instead of dictionary key to return original name
+        scores[compound.name] = similarity
     
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)

@@ -9,11 +9,19 @@ import customtkinter as ctk
 
 
 def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None, 
-               progress_callback=None, save_path=None):
+               progress_callback=None, save_path=None, detect_replicates=False):
     """
     Core parsing logic without any UI dependencies.
     """
     compounds = {}
+    
+    # Track compounds by name to handle replicates
+    seen_names = {}
+    
+    # Add this to track replicate entries
+    if detect_replicates:
+        replicate_counter = {}
+        replicates_info = {}
     
     def report_progress(value):
         """Report progress to callback if provided"""
@@ -68,14 +76,36 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
                 for i, line in enumerate(lines, start=1):
                     line = line.strip()
                     if line.startswith("Name:"):
-                        if current_compound:
-                            # Safety check: process spectrum if it exists
-                            if current_compound.spectrum:
+                        # Process previous compound before starting a new one
+                        if current_compound is not None and hasattr(current_compound, 'name'):
+                            if hasattr(current_compound, 'spectrum') and current_compound.spectrum:
                                 current_compound.spectrum = tic_scaling(current_compound.spectrum)
-                                compounds[current_compound.name] = current_compound.to_json()
-                            else:
-                                print(f"Warning: Empty spectrum for compound: {current_compound.name}")
+                                
+                                # Track replicates and create a unique dictionary key
+                                name = current_compound.name
+                                seen_names[name] = seen_names.get(name, 0) + 1
+                                dict_key = name if seen_names[name] == 1 else f"{name} (replicate #{seen_names[name]})"
+                                
+                                # Track replicates info if requested
+                                if detect_replicates:
+                                    replicate_counter[name] = replicate_counter.get(name, 0) + 1
+                                    
+                                    if name not in replicates_info:
+                                        replicates_info[name] = []
+                                    replicates_info[name].append({
+                                        'spectrum_length': len(current_compound.spectrum),
+                                        'has_formula': bool(current_compound.formula if hasattr(current_compound, 'formula') else None),
+                                        'mw': current_compound.mw if hasattr(current_compound, 'mw') else None,
+                                        'casno': current_compound.casno if hasattr(current_compound, 'casno') else None,
+                                        'dict_key': dict_key
+                                    })
+                            
+                            # Store with unique key but keep original name in the compound
+                            compounds[dict_key] = current_compound.to_json()
+                        elif hasattr(current_compound, 'name'):  # Make sure it has a name before trying to print it
+                            print(f"Warning: Empty spectrum for compound: {current_compound.name}")
 
+                        # Create new compound for current line
                         current_compound = Compound()
                         current_compound.name = line.split(":", 1)[1].strip()
                         # Initialize an empty spectrum
@@ -136,11 +166,31 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
                             
                     report_progress(i / total_lines)
 
-                # Process the last compound
-                if current_compound:
-                    if current_compound.spectrum:
+                # Process the last compound with the same replicate logic
+                if current_compound and hasattr(current_compound, 'name'):
+                    if hasattr(current_compound, 'spectrum') and current_compound.spectrum:
                         current_compound.spectrum = tic_scaling(current_compound.spectrum)
-                        compounds[current_compound.name] = current_compound.to_json()
+                        
+                        # Same replicate handling for last compound
+                        name = current_compound.name
+                        seen_names[name] = seen_names.get(name, 0) + 1
+                        dict_key = name if seen_names[name] == 1 else f"{name} (replicate #{seen_names[name]})"
+                        
+                        # Track last compound replicates
+                        if detect_replicates:
+                            replicate_counter[name] = replicate_counter.get(name, 0) + 1
+                            
+                            if name not in replicates_info:
+                                replicates_info[name] = []
+                            replicates_info[name].append({
+                                'spectrum_length': len(current_compound.spectrum),
+                                'has_formula': bool(current_compound.formula if hasattr(current_compound, 'formula') else None),
+                                'mw': current_compound.mw if hasattr(current_compound, 'mw') else None,
+                                'casno': current_compound.casno if hasattr(current_compound, 'casno') else None,
+                                'dict_key': dict_key
+                            })
+                        
+                        compounds[dict_key] = current_compound.to_json()
                     else:
                         print(f"Warning: Empty spectrum for compound: {current_compound.name}")
 
@@ -176,6 +226,25 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
         result = {k: v if isinstance(v, Compound) else Compound.from_json(v)
                   for k, v in compounds.items()}
         report_progress(1.0)
+        
+        # Report replicates at the end if requested
+        if detect_replicates:
+            replicates = {name: count for name, count in replicate_counter.items() if count > 1}
+            if replicates:
+                print("\nFound compounds with multiple entries:")
+                for name, count in sorted(replicates.items(), key=lambda x: x[1], reverse=True):
+                    print(f"  {name}: {count} entries")
+                    for i, entry in enumerate(replicates_info[name], 1):
+                        print(f"    Entry {i}: {entry}")
+                print(f"\nTotal: {len(replicates)} compounds with replicates")
+                print(f"Total replicates: {sum(replicates.values()) - len(replicates)}")
+            else:
+                print("\nNo replicate compounds found.")
+                
+            # You might want to return this information
+            result_with_replicates = (result, {'replicates': replicates, 'details': replicates_info})
+            return result_with_replicates if detect_replicates else result
+            
         return result
     except Exception as e:
         print(f"Error during parsing: {str(e)}")
@@ -184,7 +253,8 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
 
 
 def parse(file_path=None, load_cache=True, cache_file=None, subset=None, 
-          show_ui=True, ui_framework='pyside6', progress_callback=None, save_path=None):
+          show_ui=True, ui_framework='tqdm', progress_callback=None, save_path=None, 
+          detect_replicates=False):
     """
     Parse MS library files with flexible UI options.
     
@@ -194,9 +264,10 @@ def parse(file_path=None, load_cache=True, cache_file=None, subset=None,
         cache_file: Path to the cache file
         subset: Optional subset of elements to filter by
         show_ui: Whether to show a progress UI (default: True)
-        ui_framework: 'ctk' for CustomTkinter or 'pyside6' for PySide6
+        ui_framework: 'tqdm' (default), 'ctk' for CustomTkinter or 'pyside6' for PySide6
         progress_callback: Custom progress callback function
         save_path: Optional path to save the filtered subset to (if different from cache_file)
+        detect_replicates: Whether to detect and report compounds with multiple entries
         
     Returns:
         Dictionary of compounds
@@ -209,21 +280,74 @@ def parse(file_path=None, load_cache=True, cache_file=None, subset=None,
             cache_file=cache_file, 
             subset=subset,
             progress_callback=progress_callback,
-            save_path=save_path
+            save_path=save_path,
+            detect_replicates=detect_replicates
         )
     
     # Otherwise set up the appropriate UI
-    if ui_framework.lower() == 'ctk':
-        return _parse_with_ctk(file_path, load_cache, cache_file, subset, save_path)
+    if ui_framework.lower() == 'tqdm':
+        return _parse_with_tqdm(file_path, load_cache, cache_file, subset, save_path, detect_replicates)
+    elif ui_framework.lower() == 'ctk':
+        return _parse_with_ctk(file_path, load_cache, cache_file, subset, save_path, detect_replicates)
     elif ui_framework.lower() == 'pyside6':
-        return _parse_with_pyside6(file_path, load_cache, cache_file, subset, save_path)
+        return _parse_with_pyside6(file_path, load_cache, cache_file, subset, save_path, detect_replicates)
     else:
-        raise ValueError(f"Unknown UI framework: {ui_framework}. Use 'ctk' or 'pyside6'.")
+        raise ValueError(f"Unknown UI framework: {ui_framework}. Use 'tqdm' (default), 'ctk', or 'pyside6'.")
 
-def _parse_with_ctk(file_path, load_cache, cache_file, subset, save_path=None):
+def _parse_with_tqdm(file_path, load_cache, cache_file, subset, save_path=None, detect_replicates=False):
+    """Implementation with tqdm progress bar"""
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        raise ImportError("tqdm is required for progress display. Install with 'pip install tqdm'")
+    
+    # Create a tqdm callback
+    progress_bar = None
+    
+    def tqdm_callback(value):
+        nonlocal progress_bar
+        
+        # For initial setup - create the progress bar when first called
+        if progress_bar is None:
+            total = 100  # Using percentage as the total
+            progress_bar = tqdm(total=total, desc="Parsing MS library", 
+                               bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}")
+            progress_bar.update(int(value * 100))
+        else:
+            # Calculate how much to increment
+            current = int(value * 100)
+            last = progress_bar.n
+            if current > last:
+                progress_bar.update(current - last)
+            
+            # Close the progress bar when complete
+            if value >= 1.0 and not progress_bar.disable:
+                progress_bar.close()
+    
+    try:
+        # Call parse_core with our tqdm callback
+        result = parse_core(
+            file_path=file_path,
+            load_cache=load_cache,
+            cache_file=cache_file,
+            subset=subset,
+            progress_callback=tqdm_callback,
+            save_path=save_path,
+            detect_replicates=detect_replicates
+        )
+        return result
+    finally:
+        # Ensure progress bar is closed
+        if progress_bar is not None and not getattr(progress_bar, 'disable', True):
+            progress_bar.close()
+
+def _parse_with_ctk(file_path, load_cache, cache_file, subset, save_path=None, detect_replicates=False):
     """Implementation with CustomTkinter UI"""
-    import customtkinter as ctk
-    from tkinter import TclError
+    try:
+        import customtkinter as ctk
+        from tkinter import TclError
+    except ImportError:
+        raise ImportError("CustomTkinter is required for CTK UI. Install with 'pip install customtkinter'")
     
     result_container = {}
     progress_value = [0]
@@ -239,7 +363,8 @@ def _parse_with_ctk(file_path, load_cache, cache_file, subset, save_path=None):
                 cache_file=cache_file,
                 subset=subset,
                 progress_callback=update_progress,
-                save_path=save_path
+                save_path=save_path,
+                detect_replicates=detect_replicates
             )
             result_container['result'] = result
         finally:
@@ -291,12 +416,12 @@ def _parse_with_ctk(file_path, load_cache, cache_file, subset, save_path=None):
 
     return result_container.get('result', {})
 
-def _parse_with_pyside6(file_path, load_cache, cache_file, subset, save_path=None):
+def _parse_with_pyside6(file_path, load_cache, cache_file, subset, save_path=None, detect_replicates=False):
     """Implementation with PySide6 UI"""
     try:
         from PySide6.QtWidgets import (QApplication, QDialog, QProgressBar, 
                                       QVBoxLayout, QLabel, QFrame, QHBoxLayout)
-        from PySide6.QtCore import Qt, QSize
+        from PySide6.QtCore import Qt, QSize, QTimer
         from PySide6.QtGui import QIcon, QPixmap
         import os
     except ImportError:
@@ -401,7 +526,8 @@ def _parse_with_pyside6(file_path, load_cache, cache_file, subset, save_path=Non
         cache_file=cache_file,
         subset=subset,
         progress_callback=update_progress,
-        save_path=save_path
+        save_path=save_path,
+        detect_replicates=detect_replicates
     )
     
     # Mark as complete and wait briefly before closing
@@ -410,7 +536,6 @@ def _parse_with_pyside6(file_path, load_cache, cache_file, subset, save_path=Non
     QApplication.processEvents()
     
     # Use QTimer for a short delay before closing
-    from PySide6.QtCore import QTimer
     QTimer.singleShot(800, dialog.close)
     
     # If the application was created here, make sure it processes remaining events

@@ -22,5 +22,10 @@ setup(
         "requests",
         "tqdm"
     ],
+    extras_require={
+        "ui": ["customtkinter", "PySide6"],
+        "ctk": ["customtkinter"],
+        "pyside": ["PySide6"],
+    },
     python_requires=">=3.8",
 )

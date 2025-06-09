@@ -40,7 +40,7 @@ class MSToolkit:
         n_clusters: int = 100,
         mz_shift: int = 0,  # Add this parameter
         show_ui: bool = True,  # New parameter for UI control
-        ui_framework: str = 'pyside6',  # Default to PySide6 for better compatibility
+        ui_framework: str = 'tqdm',
         progress_callback: callable = None  # Allow custom progress tracking
     ):
         """
@@ -330,8 +330,7 @@ class MSToolkit:
         weighting_scheme="None", 
         composite=False, 
         unmatched_method="keep_all",
-        top_k_clusters=1  # Add parameter to control number of clusters/components
-    ):
+        top_k_clusters=1):
         """
         Preselector + (composite_)cosine similarity in vector space.
         
@@ -396,6 +395,8 @@ class MSToolkit:
             similarity_measure=similarity_measure,
             unmatched_method=unmatched_method
         )
+        
+        # The compare_spectra function will now return results with original compound names
         return results[:top_n]
 
     def search_w2v(self, query_input, top_n=10, intensity_power=0.6, top_k_clusters=1, n_decimals=2):
@@ -488,14 +489,17 @@ class MSToolkit:
 
         # Calculate similarities - avoid division by zero
         similarities = {}
-        for name, vec in embeddings.items():
+        for dict_key, vec in embeddings.items():
             query_norm = np.linalg.norm(query_embedding)
             vec_norm = np.linalg.norm(vec)
             
             if query_norm > 0 and vec_norm > 0:
-                similarities[name] = float(np.dot(query_embedding, vec) / (query_norm * vec_norm))
+                # Use the original compound name, not the dictionary key with suffix
+                compound_name = self.library[dict_key].name
+                similarities[compound_name] = float(np.dot(query_embedding, vec) / (query_norm * vec_norm))
             else:
-                similarities[name] = 0.0
+                compound_name = self.library[dict_key].name
+                similarities[compound_name] = 0.0
                 
         return sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
 
