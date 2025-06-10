@@ -84,19 +84,22 @@ class MSToolkit:
         show_ui: bool = None,
         ui_framework: str = None,
         progress_callback: callable = None,
-        save_path: str = None
+        save_path: str = None,
+        quiet: bool = None  # Add quiet parameter
     ):
         """
-        Load library directly from JSON cache or parse from text file.
+        Load library directly from JSON cache or parse from text file,
+        then automatically vectorize the library.
         
         Args:
             file_path (str, optional): Path to library text file. Defaults to self.library_txt.
             json_path (str, optional): Path to JSON cache file. Defaults to self.cache_json.
             subset (str, optional): Subset of elements to include. Defaults to None.
             show_ui (bool, optional): Whether to show a progress UI. Defaults to value set in __init__.
-            ui_framework (str, optional): UI framework to use ('ctk' or 'pyside6'). Defaults to value set in __init__.
+            ui_framework (str, optional): UI framework to use ('tqdm', 'ctk' or 'pyside6'). Defaults to value set in __init__.
             progress_callback (callable, optional): Custom progress callback function. Defaults to value set in __init__.
             save_path (str, optional): Path to save filtered subset for faster future loading. Defaults to None.
+            quiet (bool, optional): Suppress informational messages. Defaults to True when using tqdm.
             
         Returns:
             The loaded library
@@ -110,7 +113,54 @@ class MSToolkit:
         ui_framework = ui_framework or self.ui_framework
         progress_callback = progress_callback or self.progress_callback
         
+        # Default quiet to True when using tqdm to prevent print messages from breaking the progress bar
+        if quiet is None:
+            quiet = (ui_framework == 'tqdm')
+        
+        # If show_ui is True but no progress_callback is defined, we need to create a tqdm progress bar here
+        progress_bar = None
+        if show_ui and not progress_callback and ui_framework == 'tqdm':
+            try:
+                from tqdm import tqdm
+                # Create a cleaner progress bar without timing stats
+                progress_bar = tqdm(total=100, desc="Loading library", unit="%", 
+                               bar_format="{desc}: {percentage:3.0f}%|{bar}|")
+                
+                # Create a progress callback that updates the tqdm bar
+                def tqdm_callback(value):
+                    current = int(value * 100)
+                    last = progress_bar.n
+                    if current > last:
+                        progress_bar.update(current - last)
+                    
+                    # Change description at 90% to indicate vectorization stage
+                    if value >= 0.9 and progress_bar.desc == "Loading library":
+                        progress_bar.set_description("Vectorizing library")
+                    
+                    if value >= 1.0:
+                        progress_bar.close()
+                        print("Library successfully loaded and vectorized.")
+                        
+                progress_callback = tqdm_callback
+                self.progress_callback = tqdm_callback  # Store for future use
+                
+            except ImportError:
+                print("Warning: tqdm not found. Install with 'pip install tqdm' to see progress bars.")
+                show_ui = False
+    
+        # Create a scaled callback to report only 90% for library loading
+        original_callback = progress_callback
+        def scaled_progress_callback(value):
+            if original_callback:
+                # Scale value from 0-1 to 0-0.9 (90% of total)
+                scaled_value = value * 0.9
+                original_callback(scaled_value)
+        
+        # Flag to track if we need to vectorize (only if library was loaded)
+        library_was_loaded = False
+        
         if self.library is None:
+            library_was_loaded = True
             text_path = file_path or self.library_txt
             cache_path = json_path or self.cache_json
             
@@ -127,38 +177,87 @@ class MSToolkit:
                         load_cache=True,
                         cache_file=cache_path,
                         subset=subset,
-                        show_ui=show_ui,
+                        show_ui=False,  # Don't show UI in parse since we have our own progress bar
                         ui_framework=ui_framework,
-                        progress_callback=progress_callback,
-                        save_path=save_path
+                        progress_callback=scaled_progress_callback,
+                        save_path=save_path,
+                        quiet=quiet  # Pass quiet flag to suppress print messages
                     )
-                    return self.library
+                    # Now at 90% complete
                 except Exception as e:
                     if not text_path:
                         raise ValueError(f"JSON cache loading failed: {str(e)}. Please provide a valid text file path.") from e
                     # If JSON loading fails but we have a text path, continue to text loading
+        
+        # If we reach here, either the JSON file doesn't exist, loading failed, or json_path wasn't provided
+        # So try loading from text file if we have a path
+        if not self.library and text_path:
+            if not os.path.exists(text_path):
+                raise FileNotFoundError(f"Library text file not found: {text_path}")
             
-            # If we reach here, either the JSON file doesn't exist, loading failed, or json_path wasn't provided
-            # So try loading from text file if we have a path
-            if text_path:
-                if not os.path.exists(text_path):
-                    raise FileNotFoundError(f"Library text file not found: {text_path}")
-                
-                self.library = parse(
-                    file_path=text_path,
-                    load_cache=True,
-                    cache_file=cache_path,
-                    subset=subset,
-                    show_ui=show_ui,
-                    ui_framework=ui_framework,
-                    progress_callback=progress_callback,
-                    save_path=save_path
-                )
+            self.library = parse(
+                file_path=text_path,
+                load_cache=True,
+                cache_file=cache_path,
+                subset=subset,
+                show_ui=False,  # Don't show UI in parse since we have our own progress bar
+                ui_framework=ui_framework,
+                progress_callback=scaled_progress_callback,
+                save_path=save_path,
+                quiet=quiet  # Pass quiet flag to suppress print messages
+            )
+            # Now at 90% complete
+        elif not self.library:
+            # No text file path but JSON path was provided and failed to load
+            raise ValueError("JSON cache loading failed and no text file path was provided")
+    
+        # Automatically vectorize the library if it was just loaded
+        if library_was_loaded:
+            if original_callback:
+                # No need to print "Vectorizing library..." since our progress bar already shows this
+                self._vectorize_library_with_progress(progress_callback=original_callback, start_progress=0.9)
             else:
-                # No text file path but JSON path was provided and failed to load
-                raise ValueError("JSON cache loading failed and no text file path was provided")
+                # If no callback, just vectorize without progress reporting
+                print("Vectorizing library...")
+                self.vectorize_library()
+                print("Library successfully loaded and vectorized.")
         
         return self.library
+
+    def _vectorize_library_with_progress(self, bin_width=1.0, progress_callback=None, start_progress=0.9):
+        """
+        Create full-spectrum vectors for clustering/search with progress reporting.
+        
+        Args:
+            bin_width: Width of m/z bins (default=1.0 for unit mass resolution)
+            progress_callback: Function to call with progress updates
+            start_progress: Starting progress value (default=0.9 or 90%)
+        """
+        if self.library is None:
+            raise RuntimeError("Library must be loaded first")
+            
+        # Calculate how much progress each item represents
+        total_items = len(self.library)
+        progress_increment = 0.1 / total_items  # Final 10% divided by number of items
+        
+        self.vectors = {}
+        
+        # Process each compound with progress updates
+        for i, (name, comp) in enumerate(self.library.items()):
+            self.vectors[name] = spectrum_to_vector(comp.spectrum, max_mz=self.max_mz, bin_width=bin_width)
+            
+            # Report progress if callback provided
+            if progress_callback and i % max(1, total_items // 100) == 0:  # Update progress ~100 times
+                current_progress = start_progress + (i + 1) * progress_increment
+                # Ensure we don't exceed 100%
+                current_progress = min(1.0, current_progress)
+                progress_callback(current_progress)
+        
+        # Ensure we report 100% when done
+        if progress_callback:
+            progress_callback(1.0)
+            
+        return self.vectors
 
     def vectorize_library(self, bin_width=1.0):
         """
@@ -201,7 +300,7 @@ class MSToolkit:
         
         return self.w2v_model
 
-    def train_w2v(self, save_path=None, vector_size=300, window=500, epochs=5, workers=16, n_decimals=2):
+    def train_w2v(self, save_path=None, vector_size=300, window=500, epochs=5, workers=16, n_decimals=2, show_progress=True):
         """
         Train a new Word2Vec model on the library.
         
@@ -212,14 +311,44 @@ class MSToolkit:
             epochs (int): Number of training epochs.
             workers (int): Number of worker threads.
             n_decimals (int): Number of decimals to use for m/z values. Defaults to 2.
-    
+            show_progress (bool): Whether to display a progress bar during training. Defaults to True.
+
         Returns:
             The trained Word2Vec model
         """
         if self.library is None:
             raise RuntimeError("Library must be loaded first")
-            
+        
+        # Use provided path, then self.w2v_path, or generate a temporary path
         path_to_save = save_path or self.w2v_path
+        
+        # If we still don't have a path, create a unique temporary file
+        if not path_to_save:
+            # Create a unique identifier based on time, library size, and parameters
+            import time
+            import hashlib
+            import random
+            
+            # Create directory if it doesn't exist
+            import os
+            os.makedirs("cache", exist_ok=True)
+            
+            # Create a unique identifier
+            timestamp = int(time.time())
+            lib_hash = hashlib.md5(f"{len(self.library)}_{vector_size}_{window}_{epochs}".encode()).hexdigest()[:8]
+            random_suffix = ''.join(random.choices('0123456789abcdef', k=4))
+            
+            # Format: cache/w2v_temp_<timestamp>_<libhash>_<randomsuffix>.model
+            path_to_save = f"cache/w2v_temp_{timestamp}_{lib_hash}_{random_suffix}.model"
+            
+            print(f"\n⚠️ No save path provided for Word2Vec model!\n")
+            print(f"Model will be temporarily saved to: {path_to_save}")
+            print(f"To use this model in the future, either:")
+            print(f"  1. Load it directly with toolkit.load_w2v('{path_to_save}')")
+            print(f"  2. Rename it to a permanent location: toolkit.load_w2v('{path_to_save}', save_path='your/permanent/path.model')")
+            print(f"  3. Train a new model with a specified path: toolkit.train_w2v(save_path='your/model/path.model')\n")
+        
+        print(f"Training Word2Vec model, will save to {path_to_save}")
         
         # Train new model
         self.w2v_model = train_model(
@@ -229,8 +358,18 @@ class MSToolkit:
             window=window,
             epochs=epochs,
             workers=workers,
-            n_decimals=n_decimals  # Pass n_decimals here
+            n_decimals=n_decimals,
+            show_progress=show_progress
         )
+        
+        # Update the instance variable for future reference
+        self.w2v_path = path_to_save
+        
+        # If we used a temporary path, remind the user
+        if "w2v_temp_" in path_to_save:
+            print(f"\n✅ Model training complete!")
+            print(f"Remember, this is a temporary file. If you want to keep it, rename or move it to a permanent location.")
+        
         return self.w2v_model
 
     def load_preselector(self, file_path=None, save_path=None):

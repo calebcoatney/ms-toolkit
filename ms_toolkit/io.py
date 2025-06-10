@@ -9,9 +9,19 @@ import customtkinter as ctk
 
 
 def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None, 
-               progress_callback=None, save_path=None, detect_replicates=False):
+               progress_callback=None, save_path=None, detect_replicates=False, quiet=False):
     """
     Core parsing logic without any UI dependencies.
+    
+    Args:
+        file_path: Path to the text file to parse
+        load_cache: Whether to try loading from cache first
+        cache_file: Path to the cache file
+        subset: Optional subset of elements to filter by
+        progress_callback: Custom progress callback function
+        save_path: Optional path to save the filtered subset to
+        detect_replicates: Whether to detect and report compounds with multiple entries
+        quiet: Suppress informational print messages
     """
     compounds = {}
     
@@ -37,7 +47,8 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
 
         # Load from cache if specified and available
         if load_cache and cache_file and os.path.exists(cache_file):
-            print('Loading library from JSON file...')
+            if not quiet:
+                print('Loading library from JSON file...')
             with open(cache_file, 'r') as json_file:
                 data = json.load(json_file)
                 total_items = len(data)
@@ -50,15 +61,18 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
                     else:
                         compounds[k] = compound
                     report_progress(i / total_items)
-            print('Library successfully loaded from cache.')
+            if not quiet:
+                print('Library successfully loaded from cache.')
             
             # Save to separate file if requested (regardless of subset filtering)
             if save_path and save_path != cache_file:
-                print(f'Saving library to {save_path}...')
+                if not quiet:
+                    print(f'Saving library to {save_path}...')
                 with open(save_path, 'w') as json_file:
                     json_compounds = {k: v.to_json() for k, v in compounds.items()}
                     json.dump(json_compounds, json_file)
-                print(f'Library successfully saved to {save_path}.')
+                if not quiet:
+                    print(f'Library successfully saved to {save_path}.')
                 
         else:
             # Only try to parse text file if file_path is provided
@@ -254,7 +268,7 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
 
 def parse(file_path=None, load_cache=True, cache_file=None, subset=None, 
           show_ui=True, ui_framework='tqdm', progress_callback=None, save_path=None, 
-          detect_replicates=False):
+          detect_replicates=False, quiet=False):
     """
     Parse MS library files with flexible UI options.
     
@@ -268,6 +282,7 @@ def parse(file_path=None, load_cache=True, cache_file=None, subset=None,
         progress_callback: Custom progress callback function
         save_path: Optional path to save the filtered subset to (if different from cache_file)
         detect_replicates: Whether to detect and report compounds with multiple entries
+        quiet: Suppress informational print messages
         
     Returns:
         Dictionary of compounds
@@ -281,12 +296,13 @@ def parse(file_path=None, load_cache=True, cache_file=None, subset=None,
             subset=subset,
             progress_callback=progress_callback,
             save_path=save_path,
-            detect_replicates=detect_replicates
+            detect_replicates=detect_replicates,
+            quiet=quiet
         )
     
     # Otherwise set up the appropriate UI
     if ui_framework.lower() == 'tqdm':
-        return _parse_with_tqdm(file_path, load_cache, cache_file, subset, save_path, detect_replicates)
+        return _parse_with_tqdm(file_path, load_cache, cache_file, subset, save_path, detect_replicates, quiet)
     elif ui_framework.lower() == 'ctk':
         return _parse_with_ctk(file_path, load_cache, cache_file, subset, save_path, detect_replicates)
     elif ui_framework.lower() == 'pyside6':
@@ -294,7 +310,7 @@ def parse(file_path=None, load_cache=True, cache_file=None, subset=None,
     else:
         raise ValueError(f"Unknown UI framework: {ui_framework}. Use 'tqdm' (default), 'ctk', or 'pyside6'.")
 
-def _parse_with_tqdm(file_path, load_cache, cache_file, subset, save_path=None, detect_replicates=False):
+def _parse_with_tqdm(file_path, load_cache, cache_file, subset, save_path=None, detect_replicates=False, quiet=False):
     """Implementation with tqdm progress bar"""
     try:
         from tqdm import tqdm
@@ -310,8 +326,8 @@ def _parse_with_tqdm(file_path, load_cache, cache_file, subset, save_path=None, 
         # For initial setup - create the progress bar when first called
         if progress_bar is None:
             total = 100  # Using percentage as the total
-            progress_bar = tqdm(total=total, desc="Parsing MS library", 
-                               bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}")
+            progress_bar = tqdm(total=total, desc="Parsing library", 
+                               bar_format="{desc}: {percentage:3.0f}%|{bar}|")
             progress_bar.update(int(value * 100))
         else:
             # Calculate how much to increment

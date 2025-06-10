@@ -17,10 +17,89 @@ from .models import SpectrumDocument
 from gensim.models import Word2Vec
 import numpy as np
 
-def train_model(library: dict, file_path: str, vector_size: int = 300, window: int = 500, workers: int = 16, epochs: int = 5, n_decimals: int = 2):   
+def train_model(library: dict, file_path: str, vector_size: int = 300, window: int = 500, workers: int = 16, epochs: int = 5, n_decimals: int = 2, show_progress: bool = True):   
+    from tqdm.auto import tqdm
+    
     library_documents = [SpectrumDocument(compound.spectrum, n_decimals=n_decimals) for compound in library.values()]
-    model = Word2Vec(library_documents, vector_size=vector_size, window=window, min_count=1, workers=workers, compute_loss=True, epochs=epochs)
+    
+    # Set up callbacks for progress reporting
+    class TqdmCallback(object):
+        def __init__(self, total_epochs):
+            self.pbar = tqdm(total=total_epochs, desc="Training Word2Vec model", unit="epoch")
+            self.epoch = 0
+            self.prev_loss = 0
+            
+        def on_epoch_begin(self, model):
+            pass
+            
+        def on_epoch_end(self, model):
+            self.epoch += 1
+            if model.get_latest_training_loss():
+                current_loss = model.get_latest_training_loss()
+                loss_diff = current_loss - self.prev_loss
+                self.prev_loss = current_loss
+                self.pbar.set_postfix(loss=f"{loss_diff:.4f}")
+            self.pbar.update(1)
+            
+        def on_train_begin(self, model):
+            self.prev_loss = model.get_latest_training_loss() or 0
+            
+        def on_train_end(self, model):
+            self.pbar.close()
+    
+    # Initialize and train the model with progress tracking
+    callbacks = [TqdmCallback(epochs)] if show_progress else []
+    
+    try:
+        # For Gensim 4.x
+        model = Word2Vec(
+            library_documents, 
+            vector_size=vector_size, 
+            window=window, 
+            min_count=1, 
+            workers=workers, 
+            compute_loss=True, 
+            epochs=epochs,
+            callbacks=callbacks
+        )
+    except TypeError:
+        # Fallback for Gensim 3.x which doesn't support callbacks parameter
+        if show_progress:
+            print(f"Training Word2Vec model for {epochs} epochs...")
+            model = Word2Vec(
+                library_documents, 
+                vector_size=vector_size, 
+                window=window, 
+                min_count=1, 
+                workers=workers, 
+                compute_loss=True, 
+                epochs=1  # Start with 1 epoch
+            )
+            pbar = tqdm(total=epochs, desc="Training Word2Vec model", unit="epoch")
+            pbar.update(1)  # First epoch already done
+            
+            # Train the remaining epochs manually with progress updates
+            for _ in range(epochs - 1):
+                model.train(
+                    library_documents,
+                    total_examples=model.corpus_count,
+                    epochs=1
+                )
+                pbar.update(1)
+            pbar.close()
+        else:
+            model = Word2Vec(
+                library_documents, 
+                vector_size=vector_size, 
+                window=window, 
+                min_count=1, 
+                workers=workers, 
+                compute_loss=True, 
+                epochs=epochs
+            )
+    
     model.save(file_path)
+    return model
 
 def load_model(file_path: str):
     return Word2Vec.load(file_path)
