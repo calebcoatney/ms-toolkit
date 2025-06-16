@@ -6,7 +6,7 @@ long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="ms-toolkit-nrel",
-    version="0.1.1",
+    version="0.1.2",
     description="Tools for mass spectrometry data analysis",
     long_description=long_description,
     long_description_content_type="text/markdown",
