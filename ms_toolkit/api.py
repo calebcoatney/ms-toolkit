@@ -408,7 +408,13 @@ class MSToolkit:
         n_components=None,
         covariance_type="diag", 
         max_iter=200, 
-        random_state=42
+        random_state=42,
+        # GMM optimization parameters
+        use_pca=True,
+        n_pca_components=None,
+        pca_variance_threshold=0.95,
+        kmeans_init=True,
+        verbose=True
     ):
         """
         Train a new preselector model on the library vectors.
@@ -421,6 +427,12 @@ class MSToolkit:
             covariance_type (str): Covariance type for GMM. Defaults to "diag".
             max_iter (int): Maximum iterations for GMM. Defaults to 200.
             random_state (int): Random seed. Defaults to 42.
+            # GMM Optimization Parameters:
+            use_pca (bool): Whether to apply PCA for dimensionality reduction. Defaults to True.
+            n_pca_components (int, optional): Number of PCA components. If None, determined by variance_threshold.
+            pca_variance_threshold (float): Fraction of variance to retain with PCA. Defaults to 0.95.
+            kmeans_init (bool): Whether to use k-means for GMM initialization. Defaults to True.
+            verbose (bool): Whether to print progress information. Defaults to True.
             
         Returns:
             The trained preselector model
@@ -451,7 +463,12 @@ class MSToolkit:
                 n_components=components,
                 covariance_type=covariance_type,
                 max_iter=max_iter,
-                random_state=random_state
+                random_state=random_state,
+                use_pca=use_pca,
+                n_pca_components=n_pca_components,
+                pca_variance_threshold=pca_variance_threshold,
+                kmeans_init=kmeans_init,
+                verbose=verbose
             )
         else:
             raise ValueError(f"Unknown preselector type: {preselector_type}. Use 'kmeans' or 'gmm'.")
@@ -517,7 +534,9 @@ class MSToolkit:
             selected_keys = self.preselector.select(
                 query_vector, 
                 list(self.library.keys()),
-                top_k_components=top_k_clusters
+                top_k_components=top_k_clusters,
+                max_mz=self.max_mz,
+                mz_shift=0  # Already applied mz_shift above
             )
         else:
             # Backward compatibility with older models
@@ -581,7 +600,9 @@ class MSToolkit:
             selected_keys = self.preselector.select(
                 query_vector, 
                 list(self.library.keys()),
-                top_k_components=top_k_clusters
+                top_k_components=top_k_clusters,
+                max_mz=self.max_mz,
+                mz_shift=0  # Already applied mz_shift above
             )
         else:
             selected_keys = self.preselector.select(query_vector, list(self.library.keys()))
@@ -641,6 +662,200 @@ class MSToolkit:
                 similarities[compound_name] = 0.0
                 
         return sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+    def search_hybrid(self, query_input, method='auto', top_n=10, intensity_power=0.6, 
+                     weighting_scheme="None", composite=False, unmatched_method="keep_all",
+                     top_k_clusters=1, n_decimals=2, **kwargs):
+        """
+        Hybrid search combining vector and Word2Vec methods.
+        
+        Args:
+            query_input: Either a spectrum (list of tuples) or a vector (numpy array)
+            method: 'auto' (automatic selection), 'ensemble' (combine both), or 'fast' (rule-based selection)
+            top_n: Number of top results to return
+            intensity_power: Exponent for intensity weighting in Word2Vec
+            weighting_scheme: Weighting scheme for vector search
+            composite: Whether to use composite similarity for vector search
+            unmatched_method: How to handle unmatched peaks in vector search
+            top_k_clusters: Number of clusters/components to consider
+            n_decimals: Number of decimals for Word2Vec
+            **kwargs: Additional arguments passed to individual search methods
+            
+        Returns:
+            List of (compound_name, similarity_score) tuples, with method information if requested
+        """
+        if self.w2v_model is None:
+            raise RuntimeError("Word2Vec model must be loaded first")
+        if self.preselector is None:
+            raise RuntimeError("Preselector must be loaded first")
+        
+        # Convert input to spectrum format for analysis
+        if isinstance(query_input, np.ndarray):
+            query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift)
+        else:
+            query_spectrum = query_input
+        
+        if method == 'fast':
+            # Rule-based method selection
+            complexity = self._calculate_spectrum_complexity(query_spectrum)
+            
+            if complexity < 0.4:  # Simple spectrum - use vector search
+                return self.search_vector(
+                    query_input, top_n=top_n, weighting_scheme=weighting_scheme,
+                    composite=composite, unmatched_method=unmatched_method,
+                    top_k_clusters=top_k_clusters
+                )
+            else:  # Complex spectrum - use Word2Vec search
+                return self.search_w2v(
+                    query_input, top_n=top_n, intensity_power=intensity_power,
+                    top_k_clusters=top_k_clusters, n_decimals=n_decimals
+                )
+                
+        elif method == 'ensemble':
+            # Run both methods and combine results
+            vector_results = self.search_vector(
+                query_input, top_n=top_n*2, weighting_scheme=weighting_scheme,
+                composite=composite, unmatched_method=unmatched_method,
+                top_k_clusters=top_k_clusters
+            )
+            
+            w2v_results = self.search_w2v(
+                query_input, top_n=top_n*2, intensity_power=intensity_power,
+                top_k_clusters=top_k_clusters, n_decimals=n_decimals
+            )
+            
+            # Simple ensemble: normalize and combine
+            return self._combine_search_results(vector_results, w2v_results, query_spectrum, top_n)
+            
+        else:  # method == 'auto'
+            # Automatic method selection based on spectrum characteristics
+            return self._auto_hybrid_search(
+                query_input, query_spectrum, top_n, intensity_power, weighting_scheme,
+                composite, unmatched_method, top_k_clusters, n_decimals
+            )
+
+    def _calculate_spectrum_complexity(self, spectrum):
+        """
+        Calculate a complexity metric for the spectrum to guide method selection.
+        
+        Args:
+            spectrum: List of (m/z, intensity) tuples
+            
+        Returns:
+            float: Complexity score between 0 (simple) and 1 (complex)
+        """
+        if not spectrum:
+            return 0.0
+            
+        # Extract basic properties
+        peak_count = len(spectrum)
+        max_mz = max(mz for mz, _ in spectrum)
+        intensities = np.array([intensity for _, intensity in spectrum])
+        
+        # Normalize intensities
+        if np.sum(intensities) > 0:
+            intensities = intensities / np.sum(intensities)
+        
+        # Calculate complexity components
+        peak_density = peak_count / max(max_mz, 1)  # peaks per m/z unit
+        high_mass_fraction = sum(1 for mz, _ in spectrum if mz > 150) / peak_count
+        
+        # Shannon entropy of intensities
+        entropy = 0.0
+        for intensity in intensities:
+            if intensity > 0:
+                entropy -= intensity * np.log(intensity)
+        entropy = entropy / np.log(peak_count) if peak_count > 1 else 0  # normalize
+        
+        # Combine metrics (weights can be tuned)
+        complexity = (
+            0.3 * min(peak_density * 10, 1.0) +  # peak density component
+            0.4 * high_mass_fraction +            # high mass component
+            0.3 * entropy                         # entropy component
+        )
+        
+        return min(complexity, 1.0)
+
+    def _auto_hybrid_search(self, query_input, query_spectrum, top_n, intensity_power, 
+                           weighting_scheme, composite, unmatched_method, top_k_clusters, n_decimals):
+        """
+        Automatic hybrid search that adapts based on spectrum characteristics.
+        """
+        complexity = self._calculate_spectrum_complexity(query_spectrum)
+        
+        # Calculate adaptive weights
+        # For simple spectra (complexity < 0.3): favor vector (weight ~ 0.8)
+        # For complex spectra (complexity > 0.7): favor w2v (weight ~ 0.2)
+        # For intermediate: blend more evenly
+        vector_weight = max(0.1, min(0.9, 0.9 - complexity))
+        w2v_weight = 1.0 - vector_weight
+        
+        # Run both methods
+        vector_results = self.search_vector(
+            query_input, top_n=top_n*2, weighting_scheme=weighting_scheme,
+            composite=composite, unmatched_method=unmatched_method,
+            top_k_clusters=top_k_clusters
+        )
+        
+        w2v_results = self.search_w2v(
+            query_input, top_n=top_n*2, intensity_power=intensity_power,
+            top_k_clusters=top_k_clusters, n_decimals=n_decimals
+        )
+        
+        # Combine with adaptive weights
+        return self._combine_search_results(
+            vector_results, w2v_results, query_spectrum, top_n, 
+            vector_weight, w2v_weight
+        )
+
+    def _combine_search_results(self, vector_results, w2v_results, query_spectrum, top_n, 
+                               vector_weight=0.5, w2v_weight=0.5):
+        """
+        Combine results from vector and Word2Vec searches.
+        
+        Args:
+            vector_results: Results from vector search
+            w2v_results: Results from Word2Vec search
+            query_spectrum: Original query spectrum
+            top_n: Number of results to return
+            vector_weight: Weight for vector results
+            w2v_weight: Weight for Word2Vec results
+            
+        Returns:
+            Combined and ranked results
+        """
+        # Simple z-score normalization for each method
+        def normalize_scores(results, method_name):
+            if not results:
+                return []
+            scores = [score for _, score in results]
+            mean_score = np.mean(scores)
+            std_score = np.std(scores) if len(scores) > 1 else 1.0
+            std_score = max(std_score, 0.01)  # avoid division by zero
+            
+            return [(name, (score - mean_score) / std_score) for name, score in results]
+        
+        # Normalize scores
+        norm_vector = normalize_scores(vector_results, 'vector')
+        norm_w2v = normalize_scores(w2v_results, 'w2v')
+        
+        # Combine scores
+        combined_scores = {}
+        
+        # Add vector results
+        for name, norm_score in norm_vector:
+            combined_scores[name] = norm_score * vector_weight
+        
+        # Add w2v results
+        for name, norm_score in norm_w2v:
+            if name in combined_scores:
+                combined_scores[name] += norm_score * w2v_weight
+            else:
+                combined_scores[name] = norm_score * w2v_weight
+        
+        # Sort by combined score and return top results
+        sorted_results = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+        return sorted_results[:top_n]
 
     def download_library(self, version="2025.05.1", output_dir="cache", force=False, subset=None):
         """
