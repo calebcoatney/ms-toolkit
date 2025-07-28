@@ -377,7 +377,12 @@ class GMMPreselector:
 
         # 2) Apply PCA transformation if it was used during training
         if self.use_pca and self.pca is not None:
-            q_vec = self.pca.transform(q_vec.reshape(1, -1)).ravel()
+            q_vec_pca = self.pca.transform(q_vec.reshape(1, -1))
+            # Use only the number of components that were actually used during training
+            if hasattr(self.pca, 'n_components') and self.pca.n_components is not None:
+                q_vec = q_vec_pca[:, :self.pca.n_components].ravel()
+            else:
+                q_vec = q_vec_pca.ravel()
 
         # 3) Compute per-component responsibilities (posterior probabilities)
         #    predict_proba returns shape (1, n_components)

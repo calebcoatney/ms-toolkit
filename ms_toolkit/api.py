@@ -534,7 +534,9 @@ class MSToolkit:
             selected_keys = self.preselector.select(
                 query_vector, 
                 list(self.library.keys()),
-                top_k_components=top_k_clusters
+                top_k_components=top_k_clusters,
+                max_mz=self.max_mz,
+                mz_shift=0  # Already applied mz_shift above
             )
         else:
             # Backward compatibility with older models
@@ -598,7 +600,9 @@ class MSToolkit:
             selected_keys = self.preselector.select(
                 query_vector, 
                 list(self.library.keys()),
-                top_k_components=top_k_clusters
+                top_k_components=top_k_clusters,
+                max_mz=self.max_mz,
+                mz_shift=0  # Already applied mz_shift above
             )
         else:
             selected_keys = self.preselector.select(query_vector, list(self.library.keys()))
