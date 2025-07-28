@@ -288,23 +288,76 @@ class GMMPreselector:
             if self.verbose:
                 print("Applying PCA for dimensionality reduction...")
             
-            self.pca = PCA(
-                n_components=n_pca_components,
-                random_state=random_state
-            )
-            processed_vectors = self.pca.fit_transform(library_vectors)
+            # Use sampling for large datasets to avoid memory issues
+            n_samples, n_features = library_vectors.shape
+            memory_gb = n_samples * n_features * 8 / (1024**3)  # Estimate memory in GB
             
-            # Determine actual number of components based on variance threshold
-            if n_pca_components is None:
-                cumsum = np.cumsum(self.pca.explained_variance_ratio_)
-                n_components_actual = np.argmax(cumsum >= pca_variance_threshold) + 1
-                self.pca.n_components = n_components_actual
-                processed_vectors = processed_vectors[:, :n_components_actual]
+            if memory_gb > 1.5:  # Use sampling for datasets > 1.5GB
+                if self.verbose:
+                    print(f"Large dataset detected ({memory_gb:.1f}GB). Using random sampling for PCA fit...")
+                
+                # Sample a subset for PCA fitting (ensures identical transformation)
+                # For large spectral libraries, use more samples for better representation
+                sample_size = min(100000, max(25000, n_samples // 4))  # 25% sample, min 25K, max 100K
+                if self.verbose:
+                    print(f"Using {sample_size} samples ({sample_size/n_samples*100:.1f}%) to fit PCA...")
+                
+                # Random sampling for PCA fitting
+                np.random.seed(42)  # Reproducible sampling
+                sample_indices = np.random.choice(n_samples, sample_size, replace=False)
+                sample_vectors = library_vectors[sample_indices]
+                
+                # Fit PCA on sample
+                self.pca = PCA(
+                    n_components=n_pca_components,
+                    random_state=random_state
+                )
+                self.pca.fit(sample_vectors)
+                
+                # Determine actual number of components based on variance threshold
+                if n_pca_components is None:
+                    cumsum = np.cumsum(self.pca.explained_variance_ratio_)
+                    n_components_actual = np.argmax(cumsum >= pca_variance_threshold) + 1
+                    self.n_components_ = n_components_actual
+                else:
+                    self.n_components_ = n_pca_components
+                
+                # Transform full dataset in batches to manage memory
+                batch_size = min(10000, max(1000, n_samples // 20))
+                processed_vectors_list = []
+                
+                if self.verbose:
+                    print(f"Transforming full dataset in batches of {batch_size}...")
+                
+                for i in range(0, n_samples, batch_size):
+                    batch = library_vectors[i:i+batch_size]
+                    batch_transformed = self.pca.transform(batch)
+                    if hasattr(self, 'n_components_'):
+                        batch_transformed = batch_transformed[:, :self.n_components_]
+                    processed_vectors_list.append(batch_transformed)
+                
+                processed_vectors = np.vstack(processed_vectors_list)
+                
+            else:
+                # Use regular PCA for smaller datasets
+                self.pca = PCA(
+                    n_components=n_pca_components,
+                    random_state=random_state
+                )
+                processed_vectors = self.pca.fit_transform(library_vectors)
+                
+                # Determine actual number of components based on variance threshold
+                if n_pca_components is None:
+                    cumsum = np.cumsum(self.pca.explained_variance_ratio_)
+                    n_components_actual = np.argmax(cumsum >= pca_variance_threshold) + 1
+                    self.n_components_ = n_components_actual
+                    processed_vectors = processed_vectors[:, :n_components_actual]
             
             if self.verbose:
                 print(f"PCA reduced dimension to: {processed_vectors.shape[1]}")
                 if hasattr(self.pca, 'explained_variance_ratio_'):
-                    variance_retained = np.sum(self.pca.explained_variance_ratio_[:processed_vectors.shape[1]])
+                    n_components_to_show = getattr(self, 'n_components_', processed_vectors.shape[1])
+                    variance_retained = np.sum(self.pca.explained_variance_ratio_[:n_components_to_show])
                     print(f"Variance retained: {variance_retained:.3f}")
         
         # Initialize GMM
@@ -379,7 +432,9 @@ class GMMPreselector:
         if self.use_pca and self.pca is not None:
             q_vec_pca = self.pca.transform(q_vec.reshape(1, -1))
             # Use only the number of components that were actually used during training
-            if hasattr(self.pca, 'n_components') and self.pca.n_components is not None:
+            if hasattr(self, 'n_components_') and self.n_components_ is not None:
+                q_vec = q_vec_pca[:, :self.n_components_].ravel()
+            elif hasattr(self.pca, 'n_components') and self.pca.n_components is not None:
                 q_vec = q_vec_pca[:, :self.pca.n_components].ravel()
             else:
                 q_vec = q_vec_pca.ravel()
