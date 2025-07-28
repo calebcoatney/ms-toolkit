@@ -1,4 +1,5 @@
 /background
+/memory
 /build
 /cache
 /examples
@@ -14,4 +15,6 @@
 /massbank.ipynb
 /test_search.py
 /test_io.ipynb
+/test_clean.ipynb
 __pycache__/
+/.ipynb_checkpoints
