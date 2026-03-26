@@ -124,3 +124,19 @@ def align_spectra(spectrum1, spectrum2, max_mz=1000, unmatched_method="keep_all"
     else:
         raise ValueError("Unknown unmatched_method option.")
     return vec1, vec2
+
+def preprocess_to_vector(spectrum, weighting_scheme="None", max_mz=1000, bin_width=1.0):
+    """
+    Preprocess spectrum and return a normalized dense float32 vector.
+    Combines filter → tic_scale → mass_weight → vectorize → L2-normalize in one pass.
+    Used for library matrix construction and query preprocessing at search time.
+    """
+    spectrum = filter_low_intensity_peaks(spectrum)
+    spectrum = tic_scaling(spectrum)
+    a, b = weighting_schemes.get(weighting_scheme, (0, 1))
+    spectrum = mass_weighting(spectrum, a, b)
+    vec = spectrum_to_vector(spectrum, max_mz=max_mz, bin_width=bin_width).astype(np.float32)
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec /= norm
+    return vec
