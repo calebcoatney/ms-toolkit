@@ -18,3 +18,10 @@
 /test_clean.ipynb
 __pycache__/
 /.ipynb_checkpoints
+/*.egg-info
+.DS_Store
+
+# Experimental / local-only
+DSCI 575/
+ms_toolkit/classifiers.py
+models/*.npy
