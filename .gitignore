@@ -10,18 +10,15 @@
 /NIST14_CHO_GMM_preselector.pkl
 /notebooks
 /preselector.pkl
-/tests
-/test_search.ipynb
 /massbank.ipynb
-/test_search.py
-/test_io.ipynb
-/test_clean.ipynb
 __pycache__/
 /.ipynb_checkpoints
 /*.egg-info
 .DS_Store
+.worktrees/
 
 # Experimental / local-only
 DSCI 575/
 ms_toolkit/classifiers.py
 models/*.npy
+.worktrees
