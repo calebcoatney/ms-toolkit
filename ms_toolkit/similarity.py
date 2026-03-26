@@ -116,5 +116,9 @@ def composite_ratio_factors(query_vec, lib_vec):
         return 1.0
     r_q = query_vec[common_idx[1:]] / query_vec[common_idx[:-1]]
     r_l = lib_vec[common_idx[1:]] / lib_vec[common_idx[:-1]]
-    rf = np.minimum(r_q, r_l) / np.maximum(r_q, r_l)
+    denom = np.maximum(r_q, r_l)
+    valid = denom > 0
+    if not np.any(valid):
+        return 1.0
+    rf = np.minimum(r_q, r_l)[valid] / denom[valid]
     return float(np.mean(rf))

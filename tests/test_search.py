@@ -4,16 +4,11 @@ from ms_toolkit.models import Compound
 from ms_toolkit.preprocessing import (
     preprocess_spectrum, preprocess_to_vector, align_spectra
 )
-from ms_toolkit.similarity import dot_product_similarity, compare_spectra
-
-# Import functions that may not exist yet (for later tasks)
-try:
-    from ms_toolkit.similarity import (
-        batch_cosine_similarity, batch_overlap, composite_ratio_factors,
-        composite_weighted_cosine_similarity,
-    )
-except ImportError:
-    pass
+from ms_toolkit.similarity import (
+    dot_product_similarity, compare_spectra,
+    batch_cosine_similarity, batch_overlap, composite_ratio_factors,
+    composite_weighted_cosine_similarity,
+)
 
 from ms_toolkit.api import MSToolkit
 from sklearn.cluster import KMeans

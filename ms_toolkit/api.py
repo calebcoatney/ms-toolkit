@@ -76,10 +76,8 @@ class MSToolkit:
         self.w2v_model = None
         self.preselector = None
         self._search_matrices: dict = {}          # weighting_scheme → (n, max_mz+1) float32
-        self._search_matrix_keys: list = []       # compound keys in row order
         self._search_matrix_key_to_idx: dict = {} # key → row index
         self._w2v_matrices: dict = {}             # (n_decimals, intensity_power) → (n, vec_size) float32
-        self._w2v_matrix_keys: list = []
         self._w2v_matrix_key_to_idx: dict = {}
 
     def load_library(
@@ -189,6 +187,10 @@ class MSToolkit:
                         save_path=save_path,
                         quiet=quiet  # Pass quiet flag to suppress print messages
                     )
+                    self._search_matrices = {}
+                    self._search_matrix_key_to_idx = {}
+                    self._w2v_matrices = {}
+                    self._w2v_matrix_key_to_idx = {}
                     # Now at 90% complete
                 except Exception as e:
                     if not text_path:
@@ -212,6 +214,10 @@ class MSToolkit:
                 save_path=save_path,
                 quiet=quiet  # Pass quiet flag to suppress print messages
             )
+            self._search_matrices = {}
+            self._search_matrix_key_to_idx = {}
+            self._w2v_matrices = {}
+            self._w2v_matrix_key_to_idx = {}
             # Now at 90% complete
         elif not self.library:
             # No text file path but JSON path was provided and failed to load
@@ -487,6 +493,8 @@ class MSToolkit:
         Build and cache a preprocessed, normalized float32 matrix for weighting_scheme.
         Rows correspond to self.library compounds in insertion order.
         """
+        if weighting_scheme in self._search_matrices:
+            return
         from .preprocessing import preprocess_to_vector
         keys = list(self.library.keys())
         rows = [
@@ -496,7 +504,6 @@ class MSToolkit:
             for k in keys
         ]
         self._search_matrices[weighting_scheme] = np.vstack(rows).astype(np.float32)
-        self._search_matrix_keys = keys
         self._search_matrix_key_to_idx = {k: i for i, k in enumerate(keys)}
 
     def _get_search_matrix(self, weighting_scheme: str) -> np.ndarray:
@@ -530,7 +537,6 @@ class MSToolkit:
                 emb /= norm
             rows.append(emb)
         self._w2v_matrices[key] = np.vstack(rows).astype(np.float32)
-        self._w2v_matrix_keys = lib_keys
         self._w2v_matrix_key_to_idx = {k: i for i, k in enumerate(lib_keys)}
 
     def search_vector(
