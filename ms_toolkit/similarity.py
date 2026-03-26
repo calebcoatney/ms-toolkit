@@ -81,3 +81,40 @@ def compare_spectra(query_spectrum, library_spectra, max_mz=1000, unmatched_meth
         scores[compound.name] = similarity
     
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+
+# --- Batch Similarity (fast path for matrix search) ---
+
+def batch_cosine_similarity(query_vec, library_matrix):
+    """
+    Cosine similarity between query_vec and every row of library_matrix.
+    Both must be L2-normalized. Returns shape (n_compounds,).
+    """
+    return library_matrix @ query_vec
+
+
+def batch_overlap(query_bool, library_bool_matrix):
+    """
+    Count of common non-zero m/z peaks between query and each library row.
+    query_bool: float32 binary vector shape (n_mz,)
+    library_bool_matrix: float32 binary matrix shape (n_compounds, n_mz)
+    Returns shape (n_compounds,).
+    """
+    return library_bool_matrix @ query_bool
+
+
+def composite_ratio_factors(query_vec, lib_vec):
+    """
+    Compute avg_ratio_factor for one query/library pair using dense numpy arrays.
+    Replaces the dict-construction + set-intersection + Python inner loop in
+    composite_weighted_cosine_similarity. Ratio is scale-invariant so pre-normalized
+    vectors give the same result as raw preprocessed vectors.
+    Returns float in [0, 1]; returns 1.0 if fewer than 2 common peaks.
+    """
+    common_idx = np.where((query_vec > 0) & (lib_vec > 0))[0]
+    if len(common_idx) < 2:
+        return 1.0
+    r_q = query_vec[common_idx[1:]] / query_vec[common_idx[:-1]]
+    r_l = lib_vec[common_idx[1:]] / lib_vec[common_idx[:-1]]
+    rf = np.minimum(r_q, r_l) / np.maximum(r_q, r_l)
+    return float(np.mean(rf))
