@@ -295,3 +295,13 @@ def test_search_vector_matrix_not_rebuilt_on_second_call(toolkit):
     toolkit.search_vector(QUERY, weighting_scheme="None", top_k_clusters=2)
     m2 = toolkit._search_matrices["None"]
     assert m1 is m2
+
+
+# ---------------------------------------------------------------------------
+# Task 6: w2v matrix (structure test only — no model file required)
+# ---------------------------------------------------------------------------
+
+def test_w2v_matrix_raises_without_model(toolkit):
+    """_build_w2v_matrix raises if w2v_model is None."""
+    with pytest.raises(RuntimeError, match="Word2Vec model must be loaded"):
+        toolkit._build_w2v_matrix()

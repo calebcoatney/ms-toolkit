@@ -299,7 +299,21 @@ class MSToolkit:
             raise FileNotFoundError(f"Model file not found: {path}")
         
         self.w2v_model = load_model(path)
-        
+
+        if self.library is not None:
+            # Detect n_decimals from model vocabulary
+            n_decimals = 2
+            vocab = self.w2v_model.wv.key_to_index
+            if vocab:
+                sample = next(iter(vocab))
+                if "peak@" in sample:
+                    parts = sample.split("peak@")
+                    if len(parts) > 1 and "." in parts[1]:
+                        n_decimals = len(parts[1].split(".")[1])
+                    else:
+                        n_decimals = 0
+            self._build_w2v_matrix(n_decimals=n_decimals)
+
         # If save_path is provided, save a copy of the model
         if save_path and save_path != path:
             self.w2v_model.save(save_path)
@@ -493,6 +507,32 @@ class MSToolkit:
             self._build_search_matrix(weighting_scheme)
         return self._search_matrices[weighting_scheme]
 
+    def _build_w2v_matrix(self, n_decimals=2, intensity_power=0.6):
+        """
+        Precompute normalized float32 embedding matrix for all library compounds.
+        Keyed by (n_decimals, intensity_power) in self._w2v_matrices.
+        Call after load_w2v() to amortize per-compound calc_embedding cost.
+        """
+        if self.w2v_model is None:
+            raise RuntimeError("Word2Vec model must be loaded before building embedding matrix")
+        key = (n_decimals, intensity_power)
+        if key in self._w2v_matrices:
+            return
+        from .models import SpectrumDocument
+        from .w2v import calc_embedding
+        lib_keys = list(self.library.keys())
+        rows = []
+        for k in lib_keys:
+            doc = SpectrumDocument(self.library[k].spectrum, n_decimals=n_decimals)
+            emb = calc_embedding(self.w2v_model, doc, intensity_power).astype(np.float32)
+            norm = np.linalg.norm(emb)
+            if norm > 0:
+                emb /= norm
+            rows.append(emb)
+        self._w2v_matrices[key] = np.vstack(rows).astype(np.float32)
+        self._w2v_matrix_keys = lib_keys
+        self._w2v_matrix_key_to_idx = {k: i for i, k in enumerate(lib_keys)}
+
     def search_vector(
         self,
         query_input,
@@ -599,6 +639,7 @@ class MSToolkit:
     def search_w2v(self, query_input, top_n=10, intensity_power=0.6, top_k_clusters=1, n_decimals=2):
         """
         Preselector + Word2Vec embedding + cosine similarity.
+        Uses precomputed embedding matrix for fast batched similarity.
 
         Args:
             query_input: Either a spectrum (list of tuples) or a vector (numpy array)
@@ -606,7 +647,7 @@ class MSToolkit:
             intensity_power: Exponent for intensity weighting
             top_k_clusters: Number of clusters/components to consider (for KMeans/GMM)
             n_decimals: Number of decimals to use for m/z values. Defaults to 2.
-        
+
         Returns:
             List of (compound_name, similarity_score) tuples
         """
@@ -614,91 +655,78 @@ class MSToolkit:
             raise RuntimeError("Word2Vec model must be loaded first")
         if self.preselector is None:
             raise RuntimeError("Preselector must be loaded first")
-        
-        # Convert input to appropriate formats based on type
+
+        # Build query spectrum and vector
         if isinstance(query_input, np.ndarray):
-            # If input is a vector, ensure it has the right dimensions
             if len(query_input) != (self.max_mz + 1):
                 query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift)
                 query_vector = spectrum_to_vector(query_spectrum, max_mz=self.max_mz)
             else:
                 query_vector = query_input
-                query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift) 
+                query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift)
         else:
             query_spectrum = [(mz + self.mz_shift, intensity) for mz, intensity in query_input]
             query_vector = spectrum_to_vector(query_spectrum, max_mz=self.max_mz)
-        
-        # Handle different preselector types
+
+        # Preselector
         if isinstance(self.preselector, ClusterPreselector):
             selected_keys = self.preselector.select(
-                query_vector, 
-                list(self.library.keys()),
-                top_k_clusters=top_k_clusters
-            )
+                query_vector, list(self.library.keys()), top_k_clusters=top_k_clusters)
         elif isinstance(self.preselector, GMMPreselector):
             selected_keys = self.preselector.select(
-                query_vector, 
-                list(self.library.keys()),
-                top_k_components=top_k_clusters
-            )
+                query_vector, list(self.library.keys()), top_k_components=top_k_clusters)
         else:
             selected_keys = self.preselector.select(query_vector, list(self.library.keys()))
-        
-        # Create initial document with provided n_decimals
-        query_doc = SpectrumDocument(query_spectrum, n_decimals=n_decimals)
-        
-        # First try with the specified n_decimals
-        try:
-            query_embedding = calc_embedding(self.w2v_model, query_doc, intensity_power)
-            
-            # If the embedding is all zeros, the vocabulary might be mismatched
-            if np.all(query_embedding == 0):
-                raise ValueError("No matching words found in model vocabulary - possible decimal precision mismatch")
-                
-        except (ValueError, IndexError) as e:
-            # Try to detect the correct decimal precision from the model's vocabulary
-            if len(self.w2v_model.wv.key_to_index) > 0:
-                # Get the first key from the model's vocabulary
-                sample_word = list(self.w2v_model.wv.key_to_index.keys())[0]
-                
-                # Parse the decimal precision from the first word (e.g., "peak@41.00" → n_decimals=2)
-                if "peak@" in sample_word:
-                    peak_value = sample_word.split("peak@")[1]
-                    if "." in peak_value:
-                        detected_decimals = len(peak_value.split(".")[1])
-                    else:
-                        detected_decimals = 0
-                    
-                    if detected_decimals != n_decimals:
-                        print(f"Warning: Decimal precision mismatch. Model uses {detected_decimals} decimals, but search used {n_decimals}.")
-                        print(f"Automatically adjusting to {detected_decimals} decimals.")
-                        
-                        # Recreate document with the correct decimal precision
-                        query_doc = SpectrumDocument(query_spectrum, n_decimals=detected_decimals)
-                        query_embedding = calc_embedding(self.w2v_model, query_doc, intensity_power)
-                        
-                        # Update n_decimals for library spectra embeddings too
-                        n_decimals = detected_decimals
-        
-        # Calculate embeddings for library spectra with the (potentially adjusted) n_decimals
-        embeddings = {name: calc_embedding(self.w2v_model, SpectrumDocument(self.library[name].spectrum, n_decimals=n_decimals), intensity_power)
-                     for name in selected_keys if name in self.library}
 
-        # Calculate similarities - avoid division by zero
-        similarities = {}
-        for dict_key, vec in embeddings.items():
-            query_norm = np.linalg.norm(query_embedding)
-            vec_norm = np.linalg.norm(vec)
-            
-            if query_norm > 0 and vec_norm > 0:
-                # Use the original compound name, not the dictionary key with suffix
-                compound_name = self.library[dict_key].name
-                similarities[compound_name] = float(np.dot(query_embedding, vec) / (query_norm * vec_norm))
-            else:
-                compound_name = self.library[dict_key].name
-                similarities[compound_name] = 0.0
-                
-        return sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        from .models import SpectrumDocument
+        from .w2v import calc_embedding
+
+        # Build or retrieve w2v matrix
+        matrix_key = (n_decimals, intensity_power)
+        if matrix_key not in self._w2v_matrices:
+            self._build_w2v_matrix(n_decimals=n_decimals, intensity_power=intensity_power)
+
+        w2v_mat = self._w2v_matrices[matrix_key]
+
+        # Compute query embedding
+        query_doc = SpectrumDocument(query_spectrum, n_decimals=n_decimals)
+        query_emb = calc_embedding(self.w2v_model, query_doc, intensity_power).astype(np.float32)
+
+        # Auto-detect n_decimals if query embedding is all zeros
+        if np.all(query_emb == 0):
+            vocab = self.w2v_model.wv.key_to_index
+            if vocab:
+                sample = next(iter(vocab))
+                if "peak@" in sample:
+                    parts = sample.split("peak@")
+                    detected = len(parts[1].split(".")[1]) if "." in parts[1] else 0
+                    if detected != n_decimals:
+                        n_decimals = detected
+                        matrix_key = (n_decimals, intensity_power)
+                        if matrix_key not in self._w2v_matrices:
+                            self._build_w2v_matrix(n_decimals=n_decimals,
+                                                   intensity_power=intensity_power)
+                        w2v_mat = self._w2v_matrices[matrix_key]
+                        query_doc = SpectrumDocument(query_spectrum, n_decimals=n_decimals)
+                        query_emb = calc_embedding(
+                            self.w2v_model, query_doc, intensity_power).astype(np.float32)
+
+        query_norm = np.linalg.norm(query_emb)
+        if query_norm == 0:
+            return []
+        query_emb /= query_norm
+
+        # Subset matrix by preselector keys
+        valid_keys = [k for k in selected_keys if k in self._w2v_matrix_key_to_idx]
+        indices = [self._w2v_matrix_key_to_idx[k] for k in valid_keys]
+        sub_matrix = w2v_mat[indices]  # (n_selected, vector_size)
+
+        scores = sub_matrix @ query_emb
+        results = [
+            (self.library[k].name, float(scores[i]))
+            for i, k in enumerate(valid_keys)
+        ]
+        return sorted(results, key=lambda x: x[1], reverse=True)[:top_n]
 
     def download_library(self, version="2025.05.1", output_dir="cache", force=False, subset=None):
         """
