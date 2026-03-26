@@ -75,6 +75,12 @@ class MSToolkit:
         self.vectors = None
         self.w2v_model = None
         self.preselector = None
+        self._search_matrices: dict = {}          # weighting_scheme → (n, max_mz+1) float32
+        self._search_matrix_keys: list = []       # compound keys in row order
+        self._search_matrix_key_to_idx: dict = {} # key → row index
+        self._w2v_matrices: dict = {}             # (n_decimals, intensity_power) → (n, vec_size) float32
+        self._w2v_matrix_keys: list = []
+        self._w2v_matrix_key_to_idx: dict = {}
 
     def load_library(
         self, 
@@ -462,17 +468,44 @@ class MSToolkit:
         
         return self.preselector
 
+    def _build_search_matrix(self, weighting_scheme: str) -> None:
+        """
+        Build and cache a preprocessed, normalized float32 matrix for weighting_scheme.
+        Rows correspond to self.library compounds in insertion order.
+        """
+        from .preprocessing import preprocess_to_vector
+        keys = list(self.library.keys())
+        rows = [
+            preprocess_to_vector(self.library[k].spectrum,
+                                 weighting_scheme=weighting_scheme,
+                                 max_mz=self.max_mz)
+            for k in keys
+        ]
+        self._search_matrices[weighting_scheme] = np.vstack(rows).astype(np.float32)
+        self._search_matrix_keys = keys
+        self._search_matrix_key_to_idx = {k: i for i, k in enumerate(keys)}
+
+    def _get_search_matrix(self, weighting_scheme: str) -> np.ndarray:
+        """Return cached search matrix, building it if not yet cached."""
+        if self.library is None:
+            raise RuntimeError("Library must be loaded before building search matrix")
+        if weighting_scheme not in self._search_matrices:
+            self._build_search_matrix(weighting_scheme)
+        return self._search_matrices[weighting_scheme]
+
     def search_vector(
-        self, 
-        query_input, 
-        top_n=10, 
-        weighting_scheme="None", 
-        composite=False, 
+        self,
+        query_input,
+        top_n=10,
+        weighting_scheme="None",
+        composite=False,
         unmatched_method="keep_all",
         top_k_clusters=1):
         """
-        Preselector + (composite_)cosine similarity in vector space.
-        
+        Preselector + cosine similarity in vector space.
+        Uses batched matmul fast path when unmatched_method='keep_all' (default).
+        Falls back to per-compound compare_spectra for other unmatched_method values.
+
         Args:
             query_input: Either a spectrum (list of tuples) or a vector (numpy array)
             top_n: Number of top results to return
@@ -481,62 +514,87 @@ class MSToolkit:
             unmatched_method: How to handle unmatched peaks during spectral alignment.
                               Options: "keep_all", "remove_all", "keep_library", "keep_experimental"
             top_k_clusters: Number of clusters/components to consider (for KMeans/GMM)
-            
+
         Returns:
             List of (compound_name, similarity_score) tuples
         """
         if self.preselector is None:
             raise RuntimeError("Preselector must be loaded first")
-            
-        # Convert input to appropriate formats based on type
+
+        # Build query spectrum and vector (same as before)
         if isinstance(query_input, np.ndarray):
-            # If input is a vector, ensure it has the right dimensions
             if len(query_input) != (self.max_mz + 1):
-                # Convert to spectrum (applying mz_shift) and back to vector (with correct dimensions)
                 query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift)
                 query_vector = spectrum_to_vector(query_spectrum, max_mz=self.max_mz)
             else:
                 query_vector = query_input
-                # If vector has correct dimensions, still need spectrum for later
-                query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift) 
+                query_spectrum = vector_to_spectrum(query_input, shift=self.mz_shift)
         else:
-            # If input is a spectrum, apply mz_shift and convert to vector
             query_spectrum = [(mz + self.mz_shift, intensity) for mz, intensity in query_input]
             query_vector = spectrum_to_vector(query_spectrum, max_mz=self.max_mz)
-        
-        # Now we're guaranteed to have both a vector with correct dimensions and a spectrum
-        
-        # Handle different preselector types
+
+        # Preselector
         if isinstance(self.preselector, ClusterPreselector):
             selected_keys = self.preselector.select(
-                query_vector, 
-                list(self.library.keys()),
-                top_k_clusters=top_k_clusters
-            )
+                query_vector, list(self.library.keys()), top_k_clusters=top_k_clusters)
         elif isinstance(self.preselector, GMMPreselector):
             selected_keys = self.preselector.select(
-                query_vector, 
-                list(self.library.keys()),
-                top_k_components=top_k_clusters
-            )
+                query_vector, list(self.library.keys()), top_k_components=top_k_clusters)
         else:
-            # Backward compatibility with older models
             selected_keys = self.preselector.select(query_vector, list(self.library.keys()))
-        
-        subset = {k: self.library[k] for k in selected_keys if k in self.library}
 
+        # Fast path: keep_all alignment only (default), batched matmul
+        if unmatched_method == "keep_all":
+            from .preprocessing import preprocess_to_vector
+            from .similarity import (batch_cosine_similarity, batch_overlap,
+                                     composite_ratio_factors)
+
+            matrix = self._get_search_matrix(weighting_scheme)
+            query_vec = preprocess_to_vector(
+                query_spectrum, weighting_scheme=weighting_scheme, max_mz=self.max_mz)
+
+            # Map selected keys to matrix row indices
+            valid_keys = [k for k in selected_keys if k in self._search_matrix_key_to_idx]
+            indices = [self._search_matrix_key_to_idx[k] for k in valid_keys]
+            sub_matrix = matrix[indices]  # (n_selected, max_mz+1)
+
+            if not composite:
+                # weighted_cosine: single matmul
+                scores = batch_cosine_similarity(query_vec, sub_matrix)
+                results = [
+                    (self.library[k].name, float(scores[i]))
+                    for i, k in enumerate(valid_keys)
+                ]
+            else:
+                # composite: batch cosine + overlap, per-compound ratio loop
+                cosine_scores = batch_cosine_similarity(query_vec, sub_matrix)
+                query_bool = (query_vec > 0).astype(np.float32)
+                lib_bool = (sub_matrix > 0).astype(np.float32)
+                overlap_scores = batch_overlap(query_bool, lib_bool)
+                N = int(np.sum(query_vec > 0))
+
+                results = []
+                for i, k in enumerate(valid_keys):
+                    cos = float(cosine_scores[i])
+                    ov = float(overlap_scores[i])
+                    rf = composite_ratio_factors(query_vec, sub_matrix[i])
+                    score = (N * cos + ov * rf) / (N + ov) if (N + ov) > 0 else 0.0
+                    results.append((self.library[k].name, score))
+
+            return sorted(results, key=lambda x: x[1], reverse=True)[:top_n]
+
+        # Fallback: non-default unmatched_method — use old compare_spectra path
+        subset = {k: self.library[k] for k in selected_keys if k in self.library}
         similarity_measure = "composite" if composite else "weighted_cosine"
         results = compare_spectra(
-            query_spectrum, 
-            subset, 
+            query_spectrum,
+            subset,
             max_mz=self.max_mz,
-            weighting_scheme=weighting_scheme, 
+            weighting_scheme=weighting_scheme,
             similarity_measure=similarity_measure,
-            unmatched_method=unmatched_method
+            unmatched_method=unmatched_method,
         )
-        
-        # The compare_spectra function will now return results with original compound names
-        return results[:top_n]
+        return [(name, float(score)) for name, score in results[:top_n]]
 
     def search_w2v(self, query_input, top_n=10, intensity_power=0.6, top_k_clusters=1, n_decimals=2):
         """
