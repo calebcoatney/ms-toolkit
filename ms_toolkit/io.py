@@ -1,4 +1,4 @@
-import json
+import orjson
 import os
 import re
 import threading
@@ -49,8 +49,8 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
         if load_cache and cache_file and os.path.exists(cache_file):
             if not quiet:
                 print('Loading library from JSON file...')
-            with open(cache_file, 'r') as json_file:
-                data = json.load(json_file)
+            with open(cache_file, 'rb') as json_file:
+                data = orjson.loads(json_file.read())
                 total_items = len(data)
                 for i, (k, v) in enumerate(data.items(), start=1):
                     # v may be either a mapping (dict) or already a Compound; handle both.
@@ -68,9 +68,8 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
             if save_path and save_path != cache_file:
                 if not quiet:
                     print(f'Saving library to {save_path}...')
-                with open(save_path, 'w') as json_file:
-                    json_compounds = {k: v.to_json() for k, v in compounds.items()}
-                    json.dump(json_compounds, json_file)
+                with open(save_path, 'wb') as json_file:
+                    json_file.write(orjson.dumps({k: v.to_json() for k, v in compounds.items()}))
                 if not quiet:
                     print(f'Library successfully saved to {save_path}.')
                 
@@ -211,8 +210,8 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
                 # Save to cache file if specified
                 if cache_file:
                     print(f'Saving library to {cache_file}...')
-                    with open(cache_file, 'w') as json_file:
-                        json.dump(compounds, json_file)
+                    with open(cache_file, 'wb') as json_file:
+                        json_file.write(orjson.dumps(compounds))
                         print('JSON file successfully created.')
                 
                 # Save to separate file if requested
@@ -227,12 +226,12 @@ def parse_core(file_path=None, load_cache=True, cache_file=None, subset=None,
                             if compound.formula and all(element in allowed_elements for element in re.findall(r'[A-Za-z]', compound.formula)):
                                 filtered_compounds[k] = v
                                 
-                        with open(save_path, 'w') as json_file:
-                            json.dump(filtered_compounds, json_file)
+                        with open(save_path, 'wb') as json_file:
+                            json_file.write(orjson.dumps(filtered_compounds))
                     # Otherwise save the entire library
                     else:
-                        with open(save_path, 'w') as json_file:
-                            json.dump(compounds, json_file)
+                        with open(save_path, 'wb') as json_file:
+                            json_file.write(orjson.dumps(compounds))
                             
                     print(f'Library successfully saved to {save_path}.')
 

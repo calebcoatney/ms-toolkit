@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass
-import json
+import orjson
 from typing import List, Tuple
 
 
@@ -15,12 +15,12 @@ class Compound:
     spectrum: List[Tuple[int, float]] = None
 
     def to_json(self):
-        return json.dumps(asdict(self))
+        return orjson.dumps(asdict(self)).decode()
 
     @staticmethod
     def from_json(data):
-        if isinstance(data, str):
-            return Compound(**json.loads(data))
+        if isinstance(data, (str, bytes)):
+            return Compound(**orjson.loads(data))
         else:
             return Compound(**data)
 
