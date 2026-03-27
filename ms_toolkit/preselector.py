@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 from sklearn.cluster import KMeans
 from .preprocessing import spectrum_to_vector, preprocess_spectrum
@@ -48,21 +50,29 @@ class ClusterPreselector:
         distances = self.cluster_model.transform([query_vector])[0]
         
         # Get top-k closest clusters
-        top_clusters = np.argsort(distances)[:top_k_clusters]
+        top_clusters = set(np.argsort(distances)[:top_k_clusters].tolist())
         
-        # Get keys (either from library or stored keys)
+        # Resolve the ordered key list
         keys = (
             list(library.keys())
             if isinstance(library, dict)
             else (library if len(library) == len(self.labels) else self.library_keys)
         )
-        
-        # Get all library entries belonging to the top clusters
-        selected = [
-            key for idx, key in enumerate(keys)
-            if idx < len(self.labels) and self.labels[idx] in top_clusters
-        ]
-        
+
+        # Build inverted index lazily — O(n) once, then O(candidates) per query.
+        # Using len(keys) as a cache-validity guard handles library reloads.
+        # hasattr check ensures this works on pre-existing pickled instances.
+        if not hasattr(self, '_cluster_to_keys') or getattr(self, '_index_len', 0) != len(keys):
+            index = defaultdict(list)
+            for i, key in enumerate(keys):
+                if i < len(self.labels):
+                    index[int(self.labels[i])].append(key)
+            self._cluster_to_keys = dict(index)
+            self._index_len = len(keys)
+
+        selected = []
+        for c in top_clusters:
+            selected.extend(self._cluster_to_keys.get(c, []))
         return selected
     
 
@@ -154,7 +164,7 @@ class GMMPreselector:
         resp = self.gmm.predict_proba(q_vec.reshape(1, -1)).ravel()
 
         # 3) Find top-K components
-        top_comps = np.argsort(resp)[::-1][:top_k_components]
+        top_comps = set(np.argsort(resp)[::-1][:top_k_components].tolist())
 
         # 4) Gather library entries whose hard label ∈ top_comps
         #    If user passed a dict, respect its key order; else use library_keys
@@ -163,8 +173,18 @@ class GMMPreselector:
             if isinstance(library, dict)
             else (library if len(library) == len(self.labels) else self.library_keys)
         )
-        selected = [
-            key for idx, key in enumerate(keys)
-            if idx < len(self.labels) and self.labels[idx] in top_comps
-        ]
+
+        # Build inverted index lazily — O(n) once, then O(candidates) per query.
+        # hasattr check ensures this works on pre-existing pickled instances.
+        if not hasattr(self, '_comp_to_keys') or getattr(self, '_index_len', 0) != len(keys):
+            index = defaultdict(list)
+            for i, key in enumerate(keys):
+                if i < len(self.labels):
+                    index[int(self.labels[i])].append(key)
+            self._comp_to_keys = dict(index)
+            self._index_len = len(keys)
+
+        selected = []
+        for c in top_comps:
+            selected.extend(self._comp_to_keys.get(c, []))
         return selected
